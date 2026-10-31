@@ -4,6 +4,10 @@
 #include "core/device_registry.hpp"
 #include "core/sensor_state.hpp"
 
+#include <atomic>
+#include <mutex>
+#include <thread>
+
 using namespace blehr;
 
 namespace {
@@ -298,4 +302,43 @@ TEST(visibility_first_reading_of_connection_needs_confirmation)
 	m.subscribed(12 * kSec);
 	m.measurement(hr(72), 12 * kSec);
 	CHECK(!shouldRender(m.snapshot(), 12 * kSec, kTimeout));
+}
+
+TEST(registry_concurrent_saves_never_regress_and_reads_never_wait_on_io)
+{
+	DeviceRegistry reg;
+	std::mutex fileMutex;
+	std::vector<SavedDevice> onDisk;
+	std::atomic<int> writes{0};
+	reg.setPersist([&](const std::vector<SavedDevice> &d) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(20)); // slow disk
+		std::lock_guard<std::mutex> lock(fileMutex);
+		onDisk = d;
+		writes++;
+		return true;
+	});
+	std::vector<std::thread> writers;
+	for (int t = 0; t < 4; ++t)
+		writers.emplace_back([&reg, t] {
+			for (int i = 0; i < 5; ++i) {
+				SavedDevice d;
+				d.identity.address = 0xA00000000000ULL + uint64_t(t * 16 + i);
+				reg.save(d);
+			}
+		});
+	// While writers wait on the slow "disk", lookups must stay fast.
+	const auto start = std::chrono::steady_clock::now();
+	int lookups = 0;
+	while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(150)) {
+		const auto t0 = std::chrono::steady_clock::now();
+		(void)reg.find("ble:public:A0:00:00:00:00:01");
+		CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(15));
+		lookups++;
+	}
+	for (auto &w : writers)
+		w.join();
+	CHECK(lookups > 10);
+	std::lock_guard<std::mutex> lock(fileMutex);
+	CHECK_EQ(onDisk.size(), size_t(20)); // the newest state is what ended up on disk
+	CHECK(writes.load() <= 20);           // stale snapshots were skipped, never written last
 }

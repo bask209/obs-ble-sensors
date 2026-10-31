@@ -31,7 +31,7 @@ jobs:
         run: ctest --test-dir build_tests -C Release --output-on-failure
 
   sanitizers:
-    name: Unit tests under AddressSanitizer (${{ matrix.os }})
+    name: Unit tests under sanitizers (${{ matrix.os }}, ${{ matrix.flags }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -41,6 +41,8 @@ jobs:
             flags: -fsanitize=address -Zi -EHsc
           - os: ubuntu-24.04
             flags: -fsanitize=address,undefined -fno-omit-frame-pointer -g
+          - os: ubuntu-24.04
+            flags: -fsanitize=thread -g -O1
     steps:
       - uses: actions/checkout@v4
         with:

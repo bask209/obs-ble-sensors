@@ -52,6 +52,28 @@ static const char *connectStatusName(ConnectStatus status)
 	return "unknown";
 }
 
+// The link's state machine. Every change also publishes the packed RenderWord with one
+// atomic store, so the per-frame query never takes a lock. Callers hold Link::m.
+class LinkMachine : public SensorLinkMachine {
+public:
+	std::atomic<uint64_t> word{0};
+
+	void searching(const std::string &detail = {}) { SensorLinkMachine::searching(detail); publish(); }
+	void connecting() { SensorLinkMachine::connecting(); publish(); }
+	void discoveringServices() { SensorLinkMachine::discoveringServices(); publish(); }
+	void subscribing() { SensorLinkMachine::subscribing(); publish(); }
+	void subscribed(int64_t nowNs) { SensorLinkMachine::subscribed(nowNs); publish(); }
+	void measurement(const HeartRateMeasurement &m, int64_t nowNs) { SensorLinkMachine::measurement(m, nowNs); publish(); }
+	void disconnected(const std::string &detail = {}) { SensorLinkMachine::disconnected(detail); publish(); }
+	void unsupported(const std::string &detail) { SensorLinkMachine::unsupported(detail); publish(); }
+	void bluetoothOff(const std::string &detail = {}) { SensorLinkMachine::bluetoothOff(detail); publish(); }
+	void error(const std::string &detail) { SensorLinkMachine::error(detail); publish(); }
+	void stopped() { SensorLinkMachine::stopped(); publish(); }
+
+private:
+	void publish() { word.store(RenderWord::pack(snapshot()), std::memory_order_release); }
+};
+
 // Lock order: BleManager::mutex_ -> Link::m -> nothing.
 // SessionSink's internal mutex -> Link::m (from backend callbacks); so the worker never
 // holds Link::m while calling SessionSink::detach().
@@ -61,7 +83,7 @@ struct BleManager::Link {
 
 	mutable std::mutex m;
 	std::condition_variable cv;
-	SensorLinkMachine machine;
+	LinkMachine machine;
 	int subscribers = 0;
 	int autoVotes = 0;
 	bool stop = false;
@@ -121,13 +143,9 @@ SensorSnapshot BleManager::Subscription::snapshot() const
 
 bool BleManager::Subscription::liveBpm(int64_t nowNs, int64_t timeoutNs, uint16_t &bpm, uint64_t &generation) const
 {
-	std::lock_guard<std::mutex> lock(link_->m);
-	const SensorSnapshot &s = link_->machine.snapshot();
-	if (!shouldRender(s, nowNs, timeoutNs))
-		return false;
-	bpm = s.bpm;
-	generation = s.connectionGeneration;
-	return true;
+	// Wait-free: a single atomic load, safe to call every frame from the render thread.
+	return RenderWord::evaluate(link_->machine.word.load(std::memory_order_acquire), nowNs, timeoutNs, bpm,
+				    generation);
 }
 
 void BleManager::Subscription::setAutoReconnect(bool enabled)
@@ -497,6 +515,7 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 
 	Backoff backoff(config_.backoffInitial, config_.backoffMax, 0.2,
 			config_.backoffSeed ? config_.backoffSeed : std::random_device{}());
+	int64_t absentSinceNs = 0; // When the device was first not found (0 = present).
 	Backoff silentBackoff(config_.silentBackoffInitial, config_.silentBackoffMax, 0.2,
 			      config_.backoffSeed ? config_.backoffSeed + 1 : std::random_device{}());
 	const int64_t silenceNs = std::chrono::duration_cast<std::chrono::nanoseconds>(config_.silenceReconnect).count();
@@ -570,6 +589,7 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 			ConnectResult result = backend_->connect(link->identity, link->cancel, sink, onPhase);
 
 			if (result.status == ConnectStatus::Connected && result.session) {
+				absentSinceNs = 0;
 				{
 					std::lock_guard<std::mutex> lock(link->m);
 					if (!link->lost && !link->stop)
@@ -638,10 +658,16 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 								(result.detail.empty() ? "" : ": " + result.detail));
 				std::lock_guard<std::mutex> lock(link->m);
 				switch (result.status) {
-				case ConnectStatus::NotFound:
+				case ConnectStatus::NotFound: {
 					link->machine.searching(result.detail);
 					delay = backoff.next();
+					if (!absentSinceNs)
+						absentSinceNs = monotonicNs();
+					const auto absent = std::chrono::nanoseconds(monotonicNs() - absentSinceNs);
+					if (absent >= config_.longAbsenceAfter && delay < config_.longAbsenceRetry)
+						delay = config_.longAbsenceRetry;
 					break;
+				}
 				case ConnectStatus::Unsupported:
 					// The device answered and has no heart-rate service: leave it alone.
 					// No further connections until the user asks (Reconnect now / reselect).

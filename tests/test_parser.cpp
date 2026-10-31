@@ -77,7 +77,7 @@ TEST(parser_energy_and_rr)
 	CHECK_EQ(m.bpm, 80);
 	CHECK(m.energyExpendedKj.has_value());
 	CHECK_EQ(*m.energyExpendedKj, 0x0102);
-	CHECK_EQ(m.rrIntervals1024.size(), size_t(2));
+	CHECK_EQ(size_t(m.rrCount), size_t(2));
 	CHECK_EQ(m.rrIntervals1024[0], 0x0400);
 	CHECK_EQ(m.rrIntervals1024[1], 0x03FF);
 }
@@ -87,7 +87,7 @@ TEST(parser_rr_odd_trailing_byte_ignored)
 	auto m = parseHeartRateMeasurement({0x10, 64, 0x00, 0x04, 0x01});
 	CHECK(m.status == ParseStatus::Ok);
 	CHECK_EQ(m.bpm, 64);
-	CHECK_EQ(m.rrIntervals1024.size(), size_t(1));
+	CHECK_EQ(size_t(m.rrCount), size_t(1));
 }
 
 TEST(parser_polar_h10_style_packet)
@@ -97,7 +97,7 @@ TEST(parser_polar_h10_style_packet)
 	CHECK(m.status == ParseStatus::Ok);
 	CHECK_EQ(m.bpm, 62);
 	CHECK(m.contact == ContactStatus::Detected);
-	CHECK_EQ(m.rrIntervals1024.size(), size_t(1));
+	CHECK_EQ(size_t(m.rrCount), size_t(1));
 }
 
 TEST(display_formats)

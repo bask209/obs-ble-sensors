@@ -47,6 +47,8 @@ private:
 
 	mutable std::mutex mutex_;
 	std::mutex persistMutex_;
+	uint64_t version_ = 0;        // Guarded by mutex_.
+	uint64_t writtenVersion_ = 0; // Guarded by persistMutex_.
 	std::vector<SavedDevice> devices_;
 	PersistFn persist_;
 };

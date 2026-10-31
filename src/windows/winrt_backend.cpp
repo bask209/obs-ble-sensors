@@ -40,7 +40,8 @@ namespace streams = winrt::Windows::Storage::Streams;
 enum class WaitResult { Completed, Failed, Cancelled, TimedOut };
 
 // Waits for a WinRT async operation without blocking forever, so that link cancellation
-// (source removed, device switched, OBS shutting down) takes effect within ~50 ms, and
+// (source removed, device switched, OBS shutting down) takes effect within ~200 ms (few
+// wake-ups while waiting), and
 // cancels the OS operation on timeout or cancellation.
 //
 // The Completed handler may be assigned only once per operation (C++/WinRT's wait_for()
@@ -54,7 +55,7 @@ template<typename Async> WaitResult waitFor(const Async &op, CancelToken *cancel
 	op.Completed([event](const auto &, AsyncStatus) { SetEvent(event->get()); });
 
 	const auto deadline = std::chrono::steady_clock::now() + timeout;
-	while (WaitForSingleObject(event->get(), 50) == WAIT_TIMEOUT) {
+	while (WaitForSingleObject(event->get(), 200) == WAIT_TIMEOUT) {
 		const bool cancelled = cancel && cancel->cancelled();
 		if (cancelled || std::chrono::steady_clock::now() >= deadline) {
 			try {
@@ -277,12 +278,31 @@ public:
 	~WinRtBackend() override
 	{
 		stopScan();
+		{
+			std::lock_guard<std::mutex> lock(adapterMutex_);
+			adapter_ = nullptr; // Release WinRT objects while the MTA is still held.
+			radio_ = nullptr;
+		}
 		if (mtaCookie_)
 			CoDecrementMTAUsage(mtaCookie_);
 	}
 
 	void threadBegin() override
 	{
+		// The plugin's own threads (one per sensor in use, plus a short-lived paired-device
+		// query) only wait on Bluetooth operations, so they run at the scheduler's minimum:
+		//  - background processing mode: lowest CPU priority class plus very low disk-I/O
+		//    and memory priority;
+		//  - EcoQoS (Windows 11): efficiency mode, preferring E-cores at low clock speed.
+		// This is safe because nothing time-critical waits for these threads: the OBS
+		// render path reads their results through a single atomic word, never a lock.
+		SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+		THREAD_POWER_THROTTLING_STATE throttling{};
+		throttling.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+		throttling.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+		throttling.StateMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+		SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttling, sizeof(throttling));
+
 		const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 		threadInitialized() = SUCCEEDED(hr);
 	}
@@ -292,6 +312,7 @@ public:
 		if (threadInitialized())
 			CoUninitialize();
 		threadInitialized() = false;
+		SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
 	}
 
 	bool startScan(const ScanParams &params, AdvertisementFn onAdvertisement) override
@@ -366,23 +387,37 @@ public:
 
 	AdapterState adapterState() override
 	{
-		try {
-			auto adapterOp = wdb::BluetoothAdapter::GetDefaultAsync();
-			if (waitFor(adapterOp, nullptr, 5000ms) != WaitResult::Completed)
-				return AdapterState::Ready; // Unknown: let the connection attempt decide.
-			const auto adapter = adapterOp.GetResults();
-			if (!adapter)
-				return AdapterState::NoAdapter;
-			if (!adapter.IsLowEnergySupported())
-				return AdapterState::NoLowEnergy;
-			auto radioOp = adapter.GetRadioAsync();
-			if (waitFor(radioOp, nullptr, 5000ms) != WaitResult::Completed)
-				return AdapterState::Ready;
-			const auto radio = radioOp.GetResults();
-			return (!radio || radio.State() == radios::RadioState::On) ? AdapterState::Ready : AdapterState::Off;
-		} catch (...) {
-			return AdapterState::Ready;
+		// The adapter and radio objects are looked up once and cached: afterwards each check
+		// is a cheap property read instead of two OS activations per retry. If a USB adapter
+		// is unplugged the cached objects throw, and the lookup simply runs again.
+		std::lock_guard<std::mutex> lock(adapterMutex_);
+		for (int attempt = 0; attempt < 2; ++attempt) {
+			try {
+				if (!adapter_) {
+					auto adapterOp = wdb::BluetoothAdapter::GetDefaultAsync();
+					if (waitFor(adapterOp, nullptr, 5000ms) != WaitResult::Completed)
+						return AdapterState::Ready; // Unknown: let the connection attempt decide.
+					adapter_ = adapterOp.GetResults();
+					radio_ = nullptr;
+					if (!adapter_)
+						return AdapterState::NoAdapter; // Not cached: re-checked next time.
+				}
+				if (!adapter_.IsLowEnergySupported())
+					return AdapterState::NoLowEnergy;
+				if (!radio_) {
+					auto radioOp = adapter_.GetRadioAsync();
+					if (waitFor(radioOp, nullptr, 5000ms) != WaitResult::Completed)
+						return AdapterState::Ready;
+					radio_ = radioOp.GetResults();
+				}
+				return (!radio_ || radio_.State() == radios::RadioState::On) ? AdapterState::Ready
+											       : AdapterState::Off;
+			} catch (...) {
+				adapter_ = nullptr;
+				radio_ = nullptr;
+			}
 		}
+		return AdapterState::Ready;
 	}
 
 	std::vector<Advertisement> pairedDevices() override
@@ -519,12 +554,9 @@ public:
 						// Measurement packets are tiny; refuse anything absurd early.
 						if (buffer.Length() > 512)
 							return;
-						const auto reader = streams::DataReader::FromBuffer(buffer);
-						uint8_t bytes[512];
-						const uint32_t n = reader.UnconsumedBufferLength();
-						if (n)
-							reader.ReadBytes(winrt::array_view<uint8_t>(bytes, bytes + n));
-						sink->data(kind, bytes, n);
+						// Zero-copy: parse straight from Windows' buffer (no DataReader
+						// object, no copy, no allocation per packet).
+						sink->data(kind, buffer.data(), buffer.Length());
 					} catch (...) {
 					}
 				});
@@ -595,6 +627,9 @@ private:
 	}
 
 	CO_MTA_USAGE_COOKIE mtaCookie_ = nullptr;
+	std::mutex adapterMutex_;
+	wdb::BluetoothAdapter adapter_{nullptr};
+	radios::Radio radio_{nullptr};
 	std::mutex scanMutex_;
 	adv::BluetoothLEAdvertisementWatcher watcher_{nullptr};
 	std::shared_ptr<ScanGate> gate_;

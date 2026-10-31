@@ -375,24 +375,34 @@ public:
 	uint32_t width() const { return width_.load(); }
 	uint32_t height() const { return height_.load(); }
 
+	// UI thread. Copies the subscription under the lock and queries it afterwards, so the
+	// graphics thread is never held up by a UI thread waiting on Bluetooth state.
 	std::string statusText()
 	{
-		std::lock_guard<std::mutex> lock(subMutex_);
-		if (deviceKey_.empty())
-			return T("Status.NoSensor");
-		if (!sub_ && !wantConnection_)
-			return T("Status.Paused");
-		if (!sub_)
+		std::shared_ptr<BleManager::Subscription> sub;
+		{
+			std::lock_guard<std::mutex> lock(subMutex_);
+			if (deviceKey_.empty())
+				return T("Status.NoSensor");
+			if (!sub_ && !wantConnection_)
+				return T("Status.Paused");
+			sub = sub_;
+		}
+		if (!sub)
 			return T("Status.Unavailable");
-		const SensorSnapshot snap = sub_->snapshot();
+		const SensorSnapshot snap = sub->snapshot();
 		return friendlyStatus(snap, monotonicNs(), timeoutNs_.load());
 	}
 
 	void reconnectNow()
 	{
-		std::lock_guard<std::mutex> lock(subMutex_);
-		if (sub_)
-			sub_->reconnectNow();
+		std::shared_ptr<BleManager::Subscription> sub;
+		{
+			std::lock_guard<std::mutex> lock(subMutex_);
+			sub = sub_;
+		}
+		if (sub)
+			sub->reconnectNow();
 	}
 
 	obs_source_t *source() const { return self_; }
@@ -412,9 +422,11 @@ private:
 			sub_ = mgr->subscribe(*identity, autoReconnect_);
 	}
 
+	// Graphics thread only (tick/render). sub_ is only ever replaced on this thread (update
+	// and tick run here; create happens before any rendering), so no lock is needed, and
+	// Subscription::liveBpm is a single atomic load: the render path never blocks.
 	bool liveBpm(uint16_t &bpm, uint64_t &generation)
 	{
-		std::lock_guard<std::mutex> lock(subMutex_);
 		return sub_ && sub_->liveBpm(monotonicNs(), timeoutNs_.load(), bpm, generation);
 	}
 
@@ -594,7 +606,7 @@ private:
 	gs_eparam_t *paramHaloRadius_ = nullptr;
 
 	std::mutex subMutex_;
-	std::unique_ptr<BleManager::Subscription> sub_;
+	std::shared_ptr<BleManager::Subscription> sub_; // Written on the graphics thread under subMutex_.
 	std::string deviceKey_;
 	bool autoReconnect_ = true;   // Guarded by subMutex_.
 	bool wantConnection_ = true;  // Guarded by subMutex_.

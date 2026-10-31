@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -47,7 +48,11 @@ struct HeartRateMeasurement {
 	bool uint16Format = false;
 	ContactStatus contact = ContactStatus::NotSupported;
 	std::optional<uint16_t> energyExpendedKj;
-	std::vector<uint16_t> rrIntervals1024; // RR intervals in 1/1024 s units.
+	// RR intervals in 1/1024 s units. A fixed array: parsing never allocates. At most 16 are
+	// kept (a default-MTU packet holds at most 9); they are not needed for display.
+	static constexpr size_t kMaxRr = 16;
+	std::array<uint16_t, kMaxRr> rrIntervals1024{};
+	uint8_t rrCount = 0;
 
 	// True only when the packet may be shown: well-formed, plausible BPM and contact
 	// not explicitly lost.

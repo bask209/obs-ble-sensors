@@ -60,6 +60,8 @@ struct Fixture {
 		ManagerConfig c;
 		c.silentBackoffInitial = ms(20);
 		c.silentBackoffMax = ms(200);
+		c.longAbsenceAfter = ms(60000);
+		c.longAbsenceRetry = ms(30000);
 		c.backoffInitial = ms(20);
 		c.backoffMax = ms(200);
 		c.silenceReconnect = ms(400);
@@ -524,4 +526,57 @@ TEST(manager_logs_connection_events_once)
 	CHECK(events[0].find("not found") != std::string::npos);
 	CHECK(events[1].find("connected to Polar H10") != std::string::npos); // repeated "not found" deduplicated
 	CHECK(events[2].find("disconnected") != std::string::npos);
+}
+
+TEST(manager_render_query_is_lock_free_and_consistent_under_load)
+{
+	// One thread streams readings and disconnects as fast as possible while another
+	// queries like the OBS render thread. Every visible result must be a value that was
+	// actually sent; ThreadSanitizer/ASan in CI check the memory model.
+	Fixture f;
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
+	std::atomic<bool> stop{false};
+	std::atomic<uint64_t> queries{0}, visible{0}, bad{0};
+	std::thread reader([&] {
+		while (!stop) {
+			uint16_t bpm = 0;
+			uint64_t gen = 0;
+			if (sub->liveBpm(monotonicNs(), kTimeout, bpm, gen)) {
+				visible++;
+				if (bpm < 60 || bpm > 69)
+					bad++;
+			}
+			queries++;
+		}
+	});
+	for (int i = 0; i < 20000; ++i) {
+		f.mock->notify(kPolar, {0x00, uint8_t(60 + i % 10)});
+		if (i % 2000 == 1999) {
+			f.mock->dropConnection(kPolar);
+			eventually([&] { return f.mock->liveSessions(kPolar) == 1; });
+		}
+	}
+	stop = true;
+	reader.join();
+	CHECK(bad.load() == 0);
+	CHECK(visible.load() > 0);
+	CHECK(queries.load() > 1000);
+}
+
+TEST(manager_long_absence_retries_less_often)
+{
+	ManagerConfig cfg = Fixture::fastConfig();
+	cfg.longAbsenceAfter = ms(300);
+	cfg.longAbsenceRetry = ms(1000);
+	Fixture f(cfg);
+	f.mock->setPresent(kPolar, false);
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	std::this_thread::sleep_for(ms(400)); // now "absent for a long time"
+	const int before = f.mock->connectAttempts(kPolar);
+	std::this_thread::sleep_for(ms(1500));
+	const int during = f.mock->connectAttempts(kPolar) - before;
+	CHECK(during >= 1 && during <= 2); // ~every 1 s instead of every <=200 ms
+	f.mock->setPresent(kPolar, true);
+	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }, 3000));
 }

@@ -37,7 +37,7 @@ TEST(fuzz_all_parsers_never_read_out_of_bounds)
 				ok++;
 				CHECK(m.bpm >= kMinValidBpm && m.bpm <= kMaxValidBpm);
 			}
-			CHECK(m.rrIntervals1024.size() <= len / 2);
+			CHECK(size_t(m.rrCount) <= len / 2);
 		}
 	}
 	CHECK(total == 7 * 300000ULL);
@@ -95,4 +95,41 @@ TEST(identity_keys_reject_malicious_input)
 	CHECK(rpa.isResolvablePrivate());
 	rpa.address = 0xC05CF5BF6280ULL; // static random (11)
 	CHECK(!rpa.isResolvablePrivate());
+}
+
+TEST(render_word_matches_visibility_rule)
+{
+	// The packed word must agree with shouldRender() everywhere except within 1 ms of the
+	// timeout edge (millisecond packing).
+	std::mt19937_64 rng(99);
+	const int64_t ms = 1000000;
+	int checked = 0;
+	for (int i = 0; i < 300000; ++i) {
+		SensorSnapshot s;
+		const int st = int(rng() % 11);
+		s.state = SensorState(st);
+		s.hasMeasurement = rng() & 1;
+		s.contactLost = (rng() % 4) == 0;
+		s.bpm = uint16_t(rng() % 400);
+		s.lastValidNs = int64_t(rng() % (1000LL * 1000 * ms)) + 1; // up to ~11 days
+		s.connectionGeneration = rng();
+		const int64_t now = s.lastValidNs + int64_t(rng() % (20000 * ms)) - 2000 * ms;
+		const int64_t timeout = (2 + int64_t(rng() % 14)) * 1000 * ms;
+		uint16_t bpm = 0;
+		uint64_t gen = 0;
+		const bool a = shouldRender(s, now, timeout);
+		const bool b = RenderWord::evaluate(RenderWord::pack(s), now, timeout, bpm, gen);
+		const int64_t edge = now - s.lastValidNs - timeout;
+		if (edge > -2 * ms && edge < 2 * ms)
+			continue;
+		if (now >= s.lastValidNs && now - s.lastValidNs < 2 * ms)
+			continue;
+		CHECK(a == b);
+		if (a && b) {
+			CHECK(bpm == s.bpm);
+			CHECK(gen == (s.connectionGeneration & 0x3FFF));
+		}
+		checked++;
+	}
+	CHECK(checked > 200000);
 }

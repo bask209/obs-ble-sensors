@@ -77,3 +77,20 @@ private:
 };
 
 } // namespace blehr
+
+namespace blehr {
+
+// Everything the renderer needs, packed into one 64-bit word so it can be published
+// and read with a single atomic store/load: no locks, no retries, no torn reads, and
+// the OBS render thread can never wait on a (low-priority) Bluetooth thread.
+//   bits  0-39  time of the last displayable reading, milliseconds (≈34 years range)
+//   bits 40-48  BPM (0-511)
+//   bit  49     displayable (Live, confirmed reading, no contact loss, BPM in range)
+//   bits 50-63  connection generation, low 14 bits (only compared for equality)
+struct RenderWord {
+	static uint64_t pack(const SensorSnapshot &s);
+	// Same rule as shouldRender(), at millisecond precision.
+	static bool evaluate(uint64_t word, int64_t nowNs, int64_t timeoutNs, uint16_t &bpm, uint64_t &generation);
+};
+
+} // namespace blehr

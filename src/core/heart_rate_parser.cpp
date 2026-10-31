@@ -51,7 +51,8 @@ HeartRateMeasurement parseHeartRateMeasurement(const uint8_t *data, size_t size)
 		// RR intervals fill the rest of the packet. A trailing odd byte is ignored rather
 		// than discarding a packet whose mandatory fields are intact.
 		while (pos + 2 <= size) {
-			m.rrIntervals1024.push_back(readU16(data + pos));
+			if (m.rrCount < HeartRateMeasurement::kMaxRr)
+				m.rrIntervals1024[m.rrCount++] = readU16(data + pos);
 			pos += 2;
 		}
 	}

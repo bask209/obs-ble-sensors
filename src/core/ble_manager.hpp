@@ -26,6 +26,10 @@ struct ManagerConfig {
 	// For devices that connect but send no heart rate (e.g. watch broadcast turned off).
 	std::chrono::milliseconds silentBackoffInitial{15000};
 	std::chrono::milliseconds silentBackoffMax{120000};
+	// A device missing for longer than this is retried at most every longAbsenceRetry
+	// (halves radio work for a sensor that is simply put away).
+	std::chrono::milliseconds longAbsenceAfter{600000};
+	std::chrono::milliseconds longAbsenceRetry{30000};
 	// Reconnect when a connection delivers no notification at all for this long.
 	std::chrono::milliseconds silenceReconnect{20000};
 	// Minimum spacing between advertisement-triggered early reconnect attempts.
@@ -54,7 +58,8 @@ public:
 
 		const std::string &key() const { return key_; }
 		SensorSnapshot snapshot() const;
-		// Cheap per-frame query: true and the BPM only when shouldRender() holds.
+		// Wait-free per-frame query (one atomic load): true and the BPM only when the
+		// visibility rule holds. Never blocks, whatever the Bluetooth threads are doing.
 		bool liveBpm(int64_t nowNs, int64_t timeoutNs, uint16_t &bpm, uint64_t &generation) const;
 		void setAutoReconnect(bool enabled);
 		void reconnectNow();

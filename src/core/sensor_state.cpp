@@ -221,3 +221,40 @@ void SensorLinkMachine::stopped()
 }
 
 } // namespace blehr
+
+namespace blehr {
+
+namespace {
+constexpr uint64_t kTimeMask = (uint64_t(1) << 40) - 1;
+constexpr int kBpmShift = 40;
+constexpr uint64_t kBpmMask = 0x1FF;
+constexpr int kShowShift = 49;
+constexpr int kGenShift = 50;
+constexpr uint64_t kGenMask = 0x3FFF;
+} // namespace
+
+uint64_t RenderWord::pack(const SensorSnapshot &s)
+{
+	const bool show = s.state == SensorState::Live && s.hasMeasurement && !s.contactLost &&
+			  s.bpm >= kMinValidBpm && s.bpm <= kMaxValidBpm && s.lastValidNs > 0;
+	if (!show)
+		return (s.connectionGeneration & kGenMask) << kGenShift;
+	const uint64_t ms = uint64_t(s.lastValidNs / 1000000) & kTimeMask;
+	return ms | (uint64_t(s.bpm & kBpmMask) << kBpmShift) | (uint64_t(1) << kShowShift) |
+	       ((s.connectionGeneration & kGenMask) << kGenShift);
+}
+
+bool RenderWord::evaluate(uint64_t word, int64_t nowNs, int64_t timeoutNs, uint16_t &bpm, uint64_t &generation)
+{
+	if (!((word >> kShowShift) & 1u))
+		return false;
+	const int64_t lastMs = int64_t(word & kTimeMask);
+	const int64_t nowMs = nowNs / 1000000;
+	if (lastMs <= 0 || nowMs < lastMs || (nowMs - lastMs) * 1000000 >= timeoutNs)
+		return false;
+	bpm = uint16_t((word >> kBpmShift) & kBpmMask);
+	generation = (word >> kGenShift) & kGenMask;
+	return true;
+}
+
+} // namespace blehr

@@ -112,11 +112,18 @@ void DeviceRegistry::noteConnected(const std::string &key, int64_t unixTime, con
 
 bool DeviceRegistry::persistLocked(std::unique_lock<std::mutex> &lock)
 {
+	// Snapshot under the data lock, then release it BEFORE waiting for the file: readers
+	// (e.g. OBS's graphics thread resolving a sensor) must never wait on disk I/O. Writes
+	// are ordered by version so an older snapshot can never overwrite a newer one.
 	auto copy = devices_;
 	auto fn = persist_;
-	// Serialize writes in order, but never hold the data lock during file I/O.
-	std::lock_guard<std::mutex> persistLock(persistMutex_);
+	const uint64_t version = ++version_;
 	lock.unlock();
+
+	std::lock_guard<std::mutex> persistLock(persistMutex_);
+	if (version <= writtenVersion_)
+		return true; // A newer snapshot was already written.
+	writtenVersion_ = version;
 	return fn ? fn(copy) : true;
 }
 

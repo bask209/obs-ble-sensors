@@ -16,7 +16,7 @@ itself every time OBS starts.
 
 *Animated heart, digits that invert whatever is behind them, contrast halo. Captured in OBS 32.2.2.*
 
-The **[review report](#review-report-v101)** below documents the efficiency, security and compatibility
+The **[review report](#review-report-v102)** below documents the efficiency, security and compatibility
 work and what was measured.
 
 ## Compatibility
@@ -115,6 +115,25 @@ Tips:
   *Fixed color* in that case.
 
 
+## What happens when there is no signal
+
+**The rule never changes: without fresh, confirmed heart-rate data the source draws nothing at
+all** (fully transparent). It keeps its place, size, transform and filters, and never shows
+"0 BPM", "--", a placeholder or an old value. Everything below happens on its own; troubleshooting
+text appears only in the source's properties and the OBS log, never on stream.
+
+| Situation | What you see on stream | What the plugin does in the background |
+| --- | --- | --- |
+| Device off or out of range when OBS starts | Nothing | Tries to reach it after 1, 2, 4, 8 s, then every 15 s (±20 % jitter). After 10 minutes of absence, every 30 s. |
+| Signal lost while live (out of range, battery dead, switched off) | Disappears as soon as Windows reports the disconnect, and **at the latest 5 s** (your timeout, 2-15 s) after the last valid reading | Reconnects automatically with the schedule above. It shows the BPM again only after **two** fresh readings from the new connection (about 1-2 s). |
+| Weak or patchy signal (some packets lost) | Stays up as long as a valid reading arrives within the timeout; otherwise hides and returns by itself when readings resume | Nothing to do: the link is kept. Garbage or partial packets are ignored and never refresh the display. |
+| Connected but the device sends no heart rate (watch broadcast off, strap connected but not worn, machine without a strap) | Nothing | After 20 s of silence it drops the connection, then retries progressively less often: 15 s, 30 s, 1 min, then every 2 min. This spares the device's battery. |
+| Device reports "no skin contact" | Disappears immediately | Keeps the connection; shows again on the next confirmed reading with contact. |
+| Bluetooth turned off, adapter unplugged, PC asleep | Nothing | Status says exactly why. It retries and resumes by itself once Bluetooth is back. |
+| Source not visible anywhere for 30 s | (not on screen) | Releases the connection to save battery and radio time; reconnects when the source is shown again (a few seconds). |
+| Device without standard heart-rate data | Nothing | Explains it in the status and never retries on its own. |
+| Watch or phone whose private address has changed (not paired with Windows) | Nothing | Keeps searching for the old address and the status explains how to pair it. It never guesses by name. |
+
 ## Bluetooth safety
 
 The plugin is designed to be harmless to every Bluetooth device, yours and other people's:
@@ -140,7 +159,7 @@ The plugin is designed to be harmless to every Bluetooth device, yours and other
   allow only one connection can't talk to a phone app at the same time, and Windows may refuse a
   second app while OBS holds the device.
 
-## Review report (v1.0.1)
+## Review report (v1.0.2)
 
 This section records the in-depth review of resource use, security and compatibility, every change
 it led to, and **what was measured versus what could not be verified**.
@@ -204,7 +223,7 @@ tampering and the integrity of the download.
 
 | Verified | How |
 | --- | --- |
-| 69 automated tests (parsers, fuzzing, state machine, connection manager with simulated devices, security) | Every build; 5+ consecutive runs; AddressSanitizer clean |
+| 73 automated tests (parsers, fuzzing, state machine, connection manager with simulated devices, lock-free render path under load, registry concurrency, security) | Every build; repeated runs; AddressSanitizer clean (15+ consecutive runs); CI also runs UBSan and ThreadSanitizer |
 | Rendering, hiding, reconnect, restart persistence, shared connections, pause-when-hidden, clean shutdown | Real OBS 32.2.2 (portable copy) with the simulated sensor, driven through obs-websocket |
 | Real Windows Bluetooth: scanning, paired-device listing, unsupported-device handling, absent device | `ble-probe` on this PC (Qualcomm FastConnect 7800) |
 | Real heart-rate device | Galaxy Watch5 Pro: 19 minutes of continuous live data with v1.0.0-beta.1 in the user's OBS. The new connection code found its heart-rate service; live streaming through the final code still needs the watch broadcasting. |
@@ -212,6 +231,31 @@ tampering and the integrity of the download.
 **Not verified:** chest straps, fitness machines and pulse oximeters on real hardware (the parsers
 are tested against the specifications only); Windows 10; other Bluetooth adapters; ARM64 Windows
 (not built: only x64 is supported); radio-level energy savings. Reports are welcome in Issues.
+
+### 5. Second audit: scheduling, concurrency and remaining costs
+
+Every remaining angle was checked: CPU, GPU, memory allocations, thread wake-ups, lock contention,
+disk I/O, radio time and scheduler priority.
+
+| Finding | Change | Result |
+| --- | --- | --- |
+| The render thread asked the Bluetooth threads for the BPM through a lock. Lowering those threads' priority could then have stalled OBS's video on a busy PC (priority inversion). | The renderer's data now lives in **one 64-bit atomic word** (time, BPM, show flag, connection id) published on every state change. The per-frame query is a single atomic load and **never waits on any thread**. The source's own UI lock was also removed from the render path. | Stress test: 20,000 readings and 10 disconnects racing a render-style reader, 0 inconsistent values. Equivalence test: 300,000 random states agree with the visibility rule. |
+| Scheduler priority (your request) | Every plugin thread now runs in Windows **background processing mode** (lowest CPU class, very low disk-I/O and memory priority) and **EcoQoS** efficiency mode (Windows 11: prefers E-cores at low clock). Safe because nothing time-critical waits for them. | Verified on the live process: worker thread priority **-4** (background). |
+| A heap allocation per notification (RR intervals in a vector) and a WinRT `DataReader` object per packet | Fixed-size array; packets parsed **in place from Windows' buffer** (zero copy) | No allocation on the per-packet path |
+| The Bluetooth adapter was looked up again (2 OS activations) on every retry | Adapter and radio objects cached; re-acquired only if the adapter disappears | Fewer OS calls per retry |
+| Cancellation polling at 20 wake-ups/s during connection attempts | 5 wake-ups/s (cancellation still within 200 ms) | 4× fewer wake-ups while connecting |
+| A sensor put away for hours was still retried every 15 s | After 10 min of absence, every 30 s | Half the radio paging for absent sensors |
+| A registry save could make other threads, including OBS's graphics thread when resuming a source, wait on disk I/O | Snapshot then write outside the data lock, with version ordering so the newest state always wins | Concurrency test: lookups stay instant during slow writes; the final file is always the newest state |
+
+**Measured after this round** (Windows 11, OBS 32.2.2, 1080p60):
+- **Searching for an absent sensor:** ≈**0.125 %** of one core and 10 MB in total, with the real Bluetooth stack.
+- **Two live sources with very large text (300 pt):**
+  - About **0.2 % of one core and 0.05 ms render time per source per frame**. This was A/B-measured as total OBS CPU 9.79 % with the sources vs 9.32 % without.
+  - The OBS profiler shows the graphics thread's source tick at **0.024 ms (99th percentile) with the sources vs 0.020 ms without**. The once-per-second text updates cause no frame spikes.
+  - **0 skipped frames.**
+
+At this point the plugin's own cost is at the measurement noise floor. What remains is the
+Windows Bluetooth stack and OBS compositing a small texture, which no plugin can avoid.
 
 ## How it works
 
