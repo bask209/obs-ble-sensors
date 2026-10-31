@@ -3,6 +3,7 @@
 #pragma once
 
 #include "device_identity.hpp"
+#include "heart_rate_parser.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -22,9 +23,13 @@ int64_t unixTimeSeconds();
 struct Advertisement {
 	DeviceIdentity identity;
 	std::string name;
-	bool advertisesHeartRate = false;
+	bool advertisesHeartRate = false; // Advertises 0x180D, 0x1826 (FTMS) or 0x1822 (PLX).
 	int16_t rssi = 0;
+	bool paired = false; // Listed from the devices paired with Windows (not seen advertising).
 };
+
+enum class AdapterState { Ready, Off, NoAdapter, NoLowEnergy };
+const char *adapterStateText(AdapterState state);
 
 // Cooperative cancellation shared between a link worker and the backend.
 class CancelToken {
@@ -56,16 +61,16 @@ private:
 // callback is running and none will run again.
 class SessionSink {
 public:
-	using DataFn = std::function<void(const uint8_t *, size_t)>;
+	using DataFn = std::function<void(MeasurementKind, const uint8_t *, size_t)>;
 	using LostFn = std::function<void(const std::string &)>;
 
 	SessionSink(DataFn onData, LostFn onLost) : onData_(std::move(onData)), onLost_(std::move(onLost)) {}
 
-	void data(const uint8_t *bytes, size_t size)
+	void data(MeasurementKind kind, const uint8_t *bytes, size_t size)
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		if (alive_ && onData_)
-			onData_(bytes, size);
+			onData_(kind, bytes, size);
 	}
 	void lost(const std::string &reason)
 	{
@@ -104,6 +109,7 @@ struct ConnectResult {
 	std::string detail;
 	std::string deviceName;
 	std::string windowsDeviceId;
+	MeasurementKind kind = MeasurementKind::HeartRateService;
 	std::unique_ptr<BleSession> session;
 };
 
@@ -137,7 +143,9 @@ public:
 	virtual bool scanHealthy() = 0; // False if the OS stopped the watcher (e.g. radio off).
 
 	// May block; only called from worker threads.
-	virtual bool bluetoothAvailable() = 0;
+	virtual AdapterState adapterState() = 0;
+	// Devices paired with Windows (stable identities). May block; worker threads only.
+	virtual std::vector<Advertisement> pairedDevices() { return {}; }
 	virtual ConnectResult connect(const DeviceIdentity &identity, CancelToken &cancel,
 				      std::shared_ptr<SessionSink> sink, const PhaseFn &onPhase) = 0;
 };

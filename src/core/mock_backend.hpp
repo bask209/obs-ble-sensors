@@ -19,6 +19,8 @@ struct MockDevice {
 	bool supportsHeartRate = true; // false -> Unsupported on connect.
 	bool present = true;           // false -> NotFound on connect.
 	bool accessDenied = false;
+	MeasurementKind kind = MeasurementKind::HeartRateService;
+	bool paired = false;
 };
 
 class MockBackend : public BleBackend {
@@ -27,6 +29,7 @@ public:
 	void addDevice(const MockDevice &device);
 	void setPresent(uint64_t address, bool present);
 	void setBluetoothOn(bool on);
+	void setAdapterState(AdapterState state); // Ready / Off / NoAdapter / NoLowEnergy
 	void setConnectDelay(std::chrono::milliseconds delay);
 	// Delivers a raw 0x2A37 payload to the live session of a device. Returns false if none.
 	bool notify(uint64_t address, const std::vector<uint8_t> &payload);
@@ -45,7 +48,8 @@ public:
 	bool startScan(const ScanParams &params, AdvertisementFn onAdvertisement) override;
 	void stopScan() override;
 	bool scanHealthy() override;
-	bool bluetoothAvailable() override;
+	AdapterState adapterState() override;
+	std::vector<Advertisement> pairedDevices() override;
 	ConnectResult connect(const DeviceIdentity &identity, CancelToken &cancel, std::shared_ptr<SessionSink> sink,
 			      const PhaseFn &onPhase) override;
 
@@ -64,6 +68,7 @@ private:
 	mutable std::mutex mutex_;
 	std::map<uint64_t, State> devices_;
 	bool bluetoothOn_ = true;
+	AdapterState adapterState_ = AdapterState::Ready;
 	std::chrono::milliseconds connectDelay_{0};
 
 	mutable std::mutex scanMutex_; // Held while delivering advertisements; stopScan waits on it.

@@ -4,6 +4,7 @@
 #include "core/heart_animation.hpp"
 #include "core/heart_rate_parser.hpp"
 #include "core/device_identity.hpp"
+#include "core/sensor_state.hpp"
 
 using namespace blehr;
 
@@ -162,4 +163,76 @@ TEST(display_number_parts)
 	CHECK_EQ(formatNumber(DisplayStyle::HeartNumberUnit, 82), std::string("82 BPM"));
 	CHECK_EQ(formatNumber(DisplayStyle::HeartNumber, 82), std::string("82"));
 	CHECK_EQ(numberLayoutSample(DisplayStyle::NumberUnit), std::string("888 BPM"));
+}
+
+TEST(ftms_indoor_bike_heart_rate)
+{
+	// flags 0x0244: More Data=0 (speed present), cadence (bit2), power (bit6), HR (bit9)
+	// speed 0x0A00, cadence 0x00B4, power 0x00C8, HR 142
+	auto m = parseMeasurement(MeasurementKind::IndoorBike, {0x44, 0x02, 0x00, 0x0A, 0xB4, 0x00, 0xC8, 0x00, 142});
+	CHECK(m.status == ParseStatus::Ok);
+	CHECK_EQ(m.bpm, 142);
+	// Same machine without a heart-rate source: no HR flag.
+	auto none = parseMeasurement(MeasurementKind::IndoorBike, {0x44, 0x00, 0x00, 0x0A, 0xB4, 0x00, 0xC8, 0x00});
+	CHECK(none.status == ParseStatus::NoHeartRate);
+	CHECK(!none.isDisplayable());
+	// HR flag set but truncated.
+	CHECK(parseMeasurement(MeasurementKind::IndoorBike, {0x44, 0x02, 0x00, 0x0A, 0xB4, 0x00, 0xC8, 0x00}).status ==
+	      ParseStatus::Malformed);
+	// HR 0 = not available.
+	CHECK(parseMeasurement(MeasurementKind::IndoorBike, {0x01, 0x02, 0x00}).status == ParseStatus::InvalidValue);
+	// Energy (5 bytes) before HR: flags bit8|bit9, More Data=1
+	auto e = parseMeasurement(MeasurementKind::IndoorBike, {0x01, 0x03, 1, 2, 3, 4, 5, 99});
+	CHECK(e.status == ParseStatus::Ok);
+	CHECK_EQ(e.bpm, 99);
+}
+
+TEST(ftms_treadmill_rower_crosstrainer_heart_rate)
+{
+	// Treadmill: More Data=1, distance (bit2, 3 bytes), HR (bit8)
+	auto t = parseMeasurement(MeasurementKind::Treadmill, {0x05, 0x01, 1, 2, 3, 128});
+	CHECK(t.status == ParseStatus::Ok);
+	CHECK_EQ(t.bpm, 128);
+	// Treadmill pace fields are 1 byte each: bits 5,6 + HR
+	auto tp = parseMeasurement(MeasurementKind::Treadmill, {0x61, 0x01, 7, 8, 131});
+	CHECK_EQ(tp.bpm, 131);
+	// Rower: More Data=0 -> stroke rate(1)+count(2) present, HR bit9
+	auto r = parseMeasurement(MeasurementKind::Rower, {0x00, 0x02, 20, 0x10, 0x00, 117});
+	CHECK(r.status == ParseStatus::Ok);
+	CHECK_EQ(r.bpm, 117);
+	// Cross trainer: 24-bit flags, More Data=1, HR bit11
+	auto c = parseMeasurement(MeasurementKind::CrossTrainer, {0x01, 0x08, 0x00, 133});
+	CHECK(c.status == ParseStatus::Ok);
+	CHECK_EQ(c.bpm, 133);
+	CHECK(parseMeasurement(MeasurementKind::CrossTrainer, {0x01, 0x08}).status == ParseStatus::Malformed);
+}
+
+TEST(plx_pulse_rate)
+{
+	// flags 0, SpO2 97 (0x0061), PR 72 (0x0048), exponent 0
+	auto m = parseMeasurement(MeasurementKind::PlxContinuous, {0x00, 0x61, 0x00, 0x48, 0x00});
+	CHECK(m.status == ParseStatus::Ok);
+	CHECK_EQ(m.bpm, 72);
+	// PR 725 * 10^-1 = 72.5 -> 73 (exponent 0xF = -1)
+	auto f = parseMeasurement(MeasurementKind::PlxSpotCheck, {0x00, 0x61, 0x00, 0xD5, 0xF2});
+	CHECK(f.status == ParseStatus::Ok);
+	CHECK_EQ(f.bpm, 73);
+	// NaN pulse rate (finger out) -> invalid, never shown
+	CHECK(parseMeasurement(MeasurementKind::PlxContinuous, {0x00, 0xFF, 0x07, 0xFF, 0x07}).status ==
+	      ParseStatus::InvalidValue);
+	CHECK(parseMeasurement(MeasurementKind::PlxContinuous, {0x00, 0x61, 0x00, 0x48}).status == ParseStatus::Malformed);
+}
+
+TEST(state_ignores_packets_without_heart_rate)
+{
+	SensorLinkMachine m;
+	m.subscribing();
+	m.subscribed(1000000000LL);
+	m.measurement(parseMeasurement(MeasurementKind::IndoorBike, {0x01, 0x02, 90}), 2000000000LL);
+	m.measurement(parseMeasurement(MeasurementKind::IndoorBike, {0x01, 0x02, 90}), 2000000000LL);
+	CHECK(shouldRender(m.snapshot(), 2000000000LL, 5000000000LL));
+	m.measurement(parseMeasurement(MeasurementKind::IndoorBike, {0x01, 0x00}), 3000000000LL);
+	CHECK_EQ(m.snapshot().malformedPackets, uint64_t(0));
+	CHECK(shouldRender(m.snapshot(), 3000000000LL, 5000000000LL)); // still fresh from 2 s
+	CHECK(!shouldRender(m.snapshot(), 7000000000LL, 5000000000LL)); // not refreshed
 }

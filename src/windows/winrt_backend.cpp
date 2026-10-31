@@ -14,6 +14,7 @@
 #include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
 #include <winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>
+#include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Devices.Radios.h>
 #include <winrt/Windows.Storage.Streams.h>
 
@@ -33,6 +34,7 @@ namespace wdb = winrt::Windows::Devices::Bluetooth;
 namespace adv = winrt::Windows::Devices::Bluetooth::Advertisement;
 namespace gatt = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
 namespace radios = winrt::Windows::Devices::Radios;
+namespace enumeration = winrt::Windows::Devices::Enumeration;
 namespace streams = winrt::Windows::Storage::Streams;
 
 enum class WaitResult { Completed, Failed, Cancelled, TimedOut };
@@ -91,6 +93,127 @@ private:
 	BleBackend::AdvertisementFn fn_;
 };
 
+// Standard SIG heart-rate sources, in order of preference.
+struct Profile {
+	MeasurementKind kind;
+	uint16_t service;
+	uint16_t characteristic;
+	bool indicate; // Uses indications instead of notifications.
+};
+constexpr Profile kProfiles[] = {
+	{MeasurementKind::HeartRateService, 0x180D, 0x2A37, false},
+	{MeasurementKind::IndoorBike, 0x1826, 0x2AD2, false},
+	{MeasurementKind::Treadmill, 0x1826, 0x2ACD, false},
+	{MeasurementKind::Rower, 0x1826, 0x2AD1, false},
+	{MeasurementKind::CrossTrainer, 0x1826, 0x2ACE, false},
+	{MeasurementKind::PlxContinuous, 0x1822, 0x2A5F, false},
+	{MeasurementKind::PlxSpotCheck, 0x1822, 0x2A5E, true},
+};
+
+winrt::guid uuid16(uint16_t shortId)
+{
+	return gatt::GattDeviceService::ConvertShortIdToUuid(shortId);
+}
+
+bool isHeartRateCapableService(const winrt::guid &uuid)
+{
+	return uuid == uuid16(0x180D) || uuid == uuid16(0x1826) || uuid == uuid16(0x1822);
+}
+
+struct Selection {
+	const Profile *profile = nullptr;
+	gatt::GattDeviceService service{nullptr};
+	gatt::GattCharacteristic characteristic{nullptr};
+};
+
+ConnectStatus communicationStatus(gatt::GattCommunicationStatus status, std::string &detail, const char *what)
+{
+	switch (status) {
+	case gatt::GattCommunicationStatus::Success:
+		return ConnectStatus::Connected;
+	case gatt::GattCommunicationStatus::Unreachable:
+		detail = "not in range";
+		return ConnectStatus::NotFound;
+	case gatt::GattCommunicationStatus::AccessDenied:
+		detail.clear();
+		return ConnectStatus::AccessDenied;
+	default:
+		detail = std::string(what) + " error";
+		return ConnectStatus::Failed;
+	}
+}
+
+// Picks the first supported profile the device offers. Returns Connected on success,
+// Unsupported if the device has none, or a communication failure. Unused service objects
+// are closed so no extra OS resources are held.
+ConnectStatus selectProfile(const wdb::BluetoothLEDevice &device, wdb::BluetoothCacheMode mode, CancelToken &cancel,
+			    Selection &out, std::string &detail)
+{
+	auto svcOp = device.GetGattServicesAsync(mode);
+	const WaitResult w = waitFor(svcOp, &cancel, 20000ms);
+	if (w == WaitResult::Cancelled)
+		return ConnectStatus::Cancelled;
+	if (w != WaitResult::Completed) {
+		detail = "service discovery timed out";
+		return ConnectStatus::NotFound;
+	}
+	const auto services = svcOp.GetResults();
+	ConnectStatus status = communicationStatus(services.Status(), detail, "service discovery");
+	if (status != ConnectStatus::Connected)
+		return status;
+
+	std::vector<gatt::GattDeviceService> all;
+	for (const auto &s : services.Services())
+		all.push_back(s);
+	auto closeAllExcept = [&all](const gatt::GattDeviceService &keep) {
+		for (auto &s : all) {
+			try {
+				if (s != keep)
+					s.Close();
+			} catch (...) {
+			}
+		}
+	};
+
+	for (const Profile &profile : kProfiles) {
+		for (const auto &service : all) {
+			if (service.Uuid() != uuid16(profile.service))
+				continue;
+			auto chrOp = service.GetCharacteristicsForUuidAsync(uuid16(profile.characteristic), mode);
+			const WaitResult cw = waitFor(chrOp, &cancel, 15000ms);
+			if (cw == WaitResult::Cancelled) {
+				closeAllExcept(nullptr);
+				return ConnectStatus::Cancelled;
+			}
+			if (cw != WaitResult::Completed)
+				continue;
+			const auto chars = chrOp.GetResults();
+			if (chars.Status() != gatt::GattCommunicationStatus::Success) {
+				status = communicationStatus(chars.Status(), detail, "characteristic discovery");
+				if (status == ConnectStatus::NotFound || status == ConnectStatus::AccessDenied) {
+					closeAllExcept(nullptr);
+					return status;
+				}
+				continue;
+			}
+			const auto needed = profile.indicate ? gatt::GattCharacteristicProperties::Indicate
+							     : gatt::GattCharacteristicProperties::Notify;
+			for (const auto &c : chars.Characteristics()) {
+				if ((c.CharacteristicProperties() & needed) == needed) {
+					out.profile = &profile;
+					out.service = service;
+					out.characteristic = c;
+					closeAllExcept(service);
+					return ConnectStatus::Connected;
+				}
+			}
+		}
+	}
+	closeAllExcept(nullptr);
+	detail = "checked Heart Rate 0x180D, Fitness Machine 0x1826 and Pulse Oximeter 0x1822";
+	return ConnectStatus::Unsupported;
+}
+
 // One connected + subscribed heart-rate characteristic. Destruction revokes the event
 // handlers first (the SessionSink was already detached by the manager), then releases
 // the OS objects so Windows can drop the connection.
@@ -106,6 +229,11 @@ public:
 		try {
 			if (device && statusToken.value)
 				device.ConnectionStatusChanged(statusToken);
+		} catch (...) {
+		}
+		try {
+			if (connectionParameters)
+				connectionParameters.Close(); // Back to Windows defaults.
 		} catch (...) {
 		}
 		try {
@@ -131,6 +259,7 @@ public:
 	gatt::GattSession session{nullptr};
 	gatt::GattDeviceService service{nullptr};
 	gatt::GattCharacteristic characteristic{nullptr};
+	wdb::BluetoothLEPreferredConnectionParametersRequest connectionParameters{nullptr};
 	winrt::event_token statusToken{};
 	winrt::event_token valueToken{};
 };
@@ -192,9 +321,9 @@ public:
 									 ? AddressType::Random
 									 : AddressType::Public;
 					const auto advertisement = args.Advertisement();
-					a.name = narrow(advertisement.LocalName());
+					a.name = sanitizeDeviceName(narrow(advertisement.LocalName()));
 					for (const auto &uuid : advertisement.ServiceUuids())
-						if (uuid == gatt::GattServiceUuids::HeartRate())
+						if (isHeartRateCapableService(uuid))
 							a.advertisesHeartRate = true;
 					a.rssi = args.RawSignalStrengthInDBm();
 					gate->deliver(a);
@@ -235,23 +364,60 @@ public:
 		}
 	}
 
-	bool bluetoothAvailable() override
+	AdapterState adapterState() override
 	{
 		try {
 			auto adapterOp = wdb::BluetoothAdapter::GetDefaultAsync();
 			if (waitFor(adapterOp, nullptr, 5000ms) != WaitResult::Completed)
-				return false;
+				return AdapterState::Ready; // Unknown: let the connection attempt decide.
 			const auto adapter = adapterOp.GetResults();
-			if (!adapter || !adapter.IsLowEnergySupported())
-				return false;
+			if (!adapter)
+				return AdapterState::NoAdapter;
+			if (!adapter.IsLowEnergySupported())
+				return AdapterState::NoLowEnergy;
 			auto radioOp = adapter.GetRadioAsync();
 			if (waitFor(radioOp, nullptr, 5000ms) != WaitResult::Completed)
-				return true; // Unknown radio state: let the connection attempt decide.
+				return AdapterState::Ready;
 			const auto radio = radioOp.GetResults();
-			return !radio || radio.State() == radios::RadioState::On;
+			return (!radio || radio.State() == radios::RadioState::On) ? AdapterState::Ready : AdapterState::Off;
 		} catch (...) {
-			return true;
+			return AdapterState::Ready;
 		}
+	}
+
+	std::vector<Advertisement> pairedDevices() override
+	{
+		std::vector<Advertisement> out;
+		try {
+			auto findOp = enumeration::DeviceInformation::FindAllAsync(
+				wdb::BluetoothLEDevice::GetDeviceSelectorFromPairingState(true));
+			if (waitFor(findOp, nullptr, 10000ms) != WaitResult::Completed)
+				return out;
+			for (const auto &info : findOp.GetResults()) {
+				if (out.size() >= 64)
+					break;
+				try {
+					auto devOp = wdb::BluetoothLEDevice::FromIdAsync(info.Id());
+					if (waitFor(devOp, nullptr, 5000ms) != WaitResult::Completed)
+						continue;
+					auto device = devOp.GetResults();
+					if (!device)
+						continue;
+					Advertisement a;
+					a.identity.address = device.BluetoothAddress();
+					a.identity.addressType = device.BluetoothAddressType() == wdb::BluetoothAddressType::Random
+									 ? AddressType::Random
+									 : AddressType::Public;
+					a.identity.windowsDeviceId = narrow(device.DeviceId());
+					a.name = sanitizeDeviceName(narrow(device.Name()));
+					device.Close(); // Only metadata was needed; no radio connection is kept.
+					out.push_back(std::move(a));
+				} catch (...) {
+				}
+			}
+		} catch (...) {
+		}
+		return out;
 	}
 
 	ConnectResult connect(const DeviceIdentity &identity, CancelToken &cancel, std::shared_ptr<SessionSink> sink,
@@ -298,7 +464,7 @@ public:
 			if (!session->device)
 				return fail(ConnectStatus::NotFound, "not in range");
 
-			r.deviceName = narrow(session->device.Name());
+			r.deviceName = sanitizeDeviceName(narrow(session->device.Name()));
 			r.windowsDeviceId = narrow(session->device.DeviceId());
 
 			// Ask Windows to keep the link up and re-establish it while we hold the session.
@@ -323,64 +489,48 @@ public:
 					}
 				});
 
-			// 2. Heart Rate service 0x180D (uncached: talks to the device).
+			// 2. Find a standard heart-rate source. Cached GATT data first (no radio
+			//    traffic when Windows already knows the device), the device itself only if
+			//    the cache has nothing useful.
 			onPhase(ConnectPhase::DiscoveringServices);
-			auto svcOp = session->device.GetGattServicesForUuidAsync(gatt::GattServiceUuids::HeartRate(),
-										 wdb::BluetoothCacheMode::Uncached);
-			w = waitFor(svcOp, &cancel, 20000ms);
-			if (w != WaitResult::Completed)
-				return waitFail(w, "service discovery");
-			const auto services = svcOp.GetResults();
-			switch (services.Status()) {
-			case gatt::GattCommunicationStatus::Success:
-				break;
-			case gatt::GattCommunicationStatus::Unreachable:
-				return fail(ConnectStatus::NotFound, "not in range");
-			case gatt::GattCommunicationStatus::AccessDenied:
-				return fail(ConnectStatus::AccessDenied, {});
-			default:
-				return fail(ConnectStatus::Failed, "service discovery error");
+			Selection sel;
+			ConnectStatus status = ConnectStatus::Connected;
+			std::string detail;
+			for (const auto mode : {wdb::BluetoothCacheMode::Cached, wdb::BluetoothCacheMode::Uncached}) {
+				status = selectProfile(session->device, mode, cancel, sel, detail);
+				if (status != ConnectStatus::Unsupported || mode == wdb::BluetoothCacheMode::Uncached)
+					break;
 			}
-			if (services.Services().Size() == 0)
-				return fail(ConnectStatus::Unsupported, "no standard Heart Rate service");
-			session->service = services.Services().GetAt(0);
+			if (status != ConnectStatus::Connected)
+				return fail(status, detail);
+			session->service = sel.service;
+			session->characteristic = sel.characteristic;
+			r.kind = sel.profile->kind;
 
-			// 3. Heart Rate Measurement characteristic 0x2A37 with Notify.
-			auto chrOp = session->service.GetCharacteristicsForUuidAsync(
-				gatt::GattCharacteristicUuids::HeartRateMeasurement(), wdb::BluetoothCacheMode::Uncached);
-			w = waitFor(chrOp, &cancel, 15000ms);
-			if (w != WaitResult::Completed)
-				return waitFail(w, "characteristic discovery");
-			const auto chars = chrOp.GetResults();
-			if (chars.Status() == gatt::GattCommunicationStatus::Unreachable)
-				return fail(ConnectStatus::NotFound, "not in range");
-			if (chars.Status() == gatt::GattCommunicationStatus::AccessDenied)
-				return fail(ConnectStatus::AccessDenied, {});
-			if (chars.Status() != gatt::GattCommunicationStatus::Success)
-				return fail(ConnectStatus::Failed, "characteristic discovery error");
-			if (chars.Characteristics().Size() == 0)
-				return fail(ConnectStatus::Unsupported, "no Heart Rate Measurement characteristic");
-			session->characteristic = chars.Characteristics().GetAt(0);
-			const auto props = session->characteristic.CharacteristicProperties();
-			if ((props & gatt::GattCharacteristicProperties::Notify) != gatt::GattCharacteristicProperties::Notify)
-				return fail(ConnectStatus::Unsupported, "heart-rate notifications not supported");
-
-			// 4. Register the handler before enabling notifications so no packet is missed,
-			//    then write the CCCD (exactly one subscription per connection).
+			// 3. Register the handler before enabling notifications so no packet is missed,
+			//    then write the CCCD (exactly one subscription per connection). This is the
+			//    only write this plugin ever makes to a device.
 			onPhase(ConnectPhase::Subscribing);
+			const MeasurementKind kind = sel.profile->kind;
 			session->valueToken = session->characteristic.ValueChanged(
-				[sink](const gatt::GattCharacteristic &, const gatt::GattValueChangedEventArgs &args) {
+				[sink, kind](const gatt::GattCharacteristic &, const gatt::GattValueChangedEventArgs &args) {
 					try {
-						const auto reader = streams::DataReader::FromBuffer(args.CharacteristicValue());
-						std::vector<uint8_t> bytes(reader.UnconsumedBufferLength());
-						if (!bytes.empty())
-							reader.ReadBytes(bytes);
-						sink->data(bytes.data(), bytes.size());
+						const auto buffer = args.CharacteristicValue();
+						// Measurement packets are tiny; refuse anything absurd early.
+						if (buffer.Length() > 512)
+							return;
+						const auto reader = streams::DataReader::FromBuffer(buffer);
+						uint8_t bytes[512];
+						const uint32_t n = reader.UnconsumedBufferLength();
+						if (n)
+							reader.ReadBytes(winrt::array_view<uint8_t>(bytes, bytes + n));
+						sink->data(kind, bytes, n);
 					} catch (...) {
 					}
 				});
 			auto cccdOp = session->characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(
-				gatt::GattClientCharacteristicConfigurationDescriptorValue::Notify);
+				sel.profile->indicate ? gatt::GattClientCharacteristicConfigurationDescriptorValue::Indicate
+						      : gatt::GattClientCharacteristicConfigurationDescriptorValue::Notify);
 			w = waitFor(cccdOp, &cancel, 15000ms);
 			if (w != WaitResult::Completed)
 				return waitFail(w, "subscription");
@@ -393,6 +543,15 @@ public:
 				return fail(ConnectStatus::AccessDenied, {});
 			default:
 				return fail(ConnectStatus::Failed, "could not subscribe to heart-rate data");
+			}
+
+			// 4. Heart rate needs ~1 small packet per second: ask Windows 11 (22H2+) for a
+			//    power-optimized connection to save radio time on the PC and battery on the
+			//    sensor. Older Windows lacks the API; the default parameters are kept.
+			try {
+				session->connectionParameters = session->device.RequestPreferredConnectionParameters(
+					wdb::BluetoothLEPreferredConnectionParameters::PowerOptimized());
+			} catch (...) {
 			}
 
 			r.status = ConnectStatus::Connected;

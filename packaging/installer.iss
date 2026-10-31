@@ -49,6 +49,19 @@ Source: "..\NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
 FinishedLabel=OBS BLE Sensors is installed.%n%nStart (or restart) OBS Studio, then add a source: Sources > + > BLE Heart Rate, and click "Scan / Manage Sensors...".
 
 [Code]
+// Lock the plugin folder down: only Administrators and SYSTEM may change the DLL that OBS
+// loads; everyone else can only read and execute it. (By default ProgramData lets any
+// user create files in subfolders.)
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if (CurStep = ssPostInstall) and IsAdminInstallMode() then
+    Exec(ExpandConstant('{sys}\icacls.exe'),
+      '"' + ExpandConstant('{app}') + '" /inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 function ObsInstalled(): Boolean;
 begin
   Result := RegKeyExists(HKLM, 'SOFTWARE\OBS Studio') or RegKeyExists(HKLM64, 'SOFTWARE\OBS Studio')

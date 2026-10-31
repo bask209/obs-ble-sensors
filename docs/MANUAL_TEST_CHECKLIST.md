@@ -28,3 +28,7 @@ device. Record pass/fail, the OBS version and the sensor model. Useful aids:
 | H | Close OBS while the dialog is scanning, and again while a sensor is connecting (switched on just before) | OBS exits normally, no crash dialog; log ends with `plugin unloaded` and no crash | ☐ |
 | I | Stream (or record) at 1080p60 for 10 minutes with the source live | Stats dock: no increase in render-lag/skipped frames compared with the source hidden | ☐ |
 | — | Uninstall.cmd | Plugin folder removed; OBS starts normally; sources show as missing plugin | ☐ |
+| — | Watch in heart-rate broadcast mode (pair it in Windows first if it uses a private address) | Appears as "Paired with Windows" or a heart-rate device; BPM shown; reconnects after the watch restarts broadcasting | ☐ |
+| — | Smart bike / treadmill with a strap paired to it (FTMS) | BPM from the machine shown; hidden when the machine reports no heart rate | ☐ |
+| — | Bluetooth pulse oximeter (PLX) | Pulse rate shown; hidden when the finger is removed | ☐ |
+| — | Hide the scene containing the source for >30 s, show it again | Log shows "connection closed", then reconnects; BPM back within a few seconds | ☐ |

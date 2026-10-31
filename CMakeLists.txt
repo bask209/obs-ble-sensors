@@ -75,3 +75,9 @@ if(OBS_BLE_SENSORS_DEV_MOCK)
 endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+# Security hardening of the shipped DLL (in addition to the template's /GS, ASLR, DEP):
+# Control Flow Guard, CET shadow-stack compatibility, and the
+# SDL checks (extra runtime checks and security warnings treated as errors).
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE /guard:cf /sdl)
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE /guard:cf /CETCOMPAT /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA)

@@ -22,6 +22,18 @@ int main(int argc, char **argv)
 		cfg.backgroundScan = false;
 	auto manager = BleManager::create(createWinRtBackend(), cfg);
 
+	if (argc >= 2 && std::string(argv[1]) == "--paired") {
+		auto backend = createWinRtBackend();
+		backend->threadBegin();
+		std::printf("adapter: %s\n", adapterStateText(backend->adapterState()));
+		for (const auto &a : backend->pairedDevices())
+			std::printf("paired %s  \"%s\"%s\n", a.identity.key().c_str(), a.name.c_str(),
+				    a.identity.isResolvablePrivate() ? "  [rotating private address]" : "");
+		backend->threadEnd();
+		manager->shutdown();
+		return 0;
+	}
+
 	if (argc < 2) {
 		std::mutex m;
 		std::map<std::string, Advertisement> seen;

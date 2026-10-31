@@ -80,3 +80,41 @@ std::optional<DeviceIdentity> identityFromKey(const std::string &key)
 }
 
 } // namespace blehr
+
+namespace blehr {
+
+std::string sanitizeDeviceName(const std::string &raw)
+{
+	std::string out;
+	size_t i = 0;
+	while (i < raw.size() && out.size() < 64) {
+		const unsigned char c = static_cast<unsigned char>(raw[i]);
+		size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+		if (len == 0 || i + len > raw.size()) {
+			++i; // Invalid lead byte or truncated sequence: skip.
+			continue;
+		}
+		bool valid = true;
+		for (size_t k = 1; k < len; ++k)
+			if ((static_cast<unsigned char>(raw[i + k]) & 0xC0) != 0x80)
+				valid = false;
+		if (!valid) {
+			++i;
+			continue;
+		}
+		if (len == 1 && (c < 0x20 || c == 0x7F)) {
+			++i; // Control character.
+			continue;
+		}
+		if (out.size() + len > 64)
+			break;
+		out.append(raw, i, len);
+		i += len;
+	}
+	const size_t first = out.find_first_not_of(' ');
+	if (first == std::string::npos)
+		return {};
+	return out.substr(first, out.find_last_not_of(' ') - first + 1);
+}
+
+} // namespace blehr

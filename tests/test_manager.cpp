@@ -47,9 +47,19 @@ struct Fixture {
 		manager = BleManager::create(std::move(backend), cfg);
 	}
 
+	// Sends a payload twice: a reading is shown only once a second one confirms that the
+	// device is streaming.
+	void feed(uint64_t address, const std::vector<uint8_t> &payload)
+	{
+		mock->notify(address, payload);
+		mock->notify(address, payload);
+	}
+
 	static ManagerConfig fastConfig()
 	{
 		ManagerConfig c;
+		c.silentBackoffInitial = ms(20);
+		c.silentBackoffMax = ms(200);
 		c.backoffInitial = ms(20);
 		c.backoffMax = ms(200);
 		c.silenceReconnect = ms(400);
@@ -81,7 +91,7 @@ TEST(manager_connects_and_shows_72_bpm)
 	CHECK(Fixture::hidden(*sub)); // Nothing before the first measurement.
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
 	CHECK(Fixture::hidden(*sub)); // Connected but no data yet.
-	f.mock->notify(kPolar, {0x00, 72});
+	f.feed(kPolar, {0x00, 72});
 	CHECK(Fixture::live(*sub, 72));
 	CHECK(sub->snapshot().state == SensorState::Live);
 }
@@ -91,7 +101,7 @@ TEST(manager_uint16_notification)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x01, 0x52, 0x00});
+	f.feed(kPolar, {0x01, 0x52, 0x00});
 	CHECK(Fixture::live(*sub, 82));
 }
 
@@ -100,11 +110,11 @@ TEST(manager_malformed_data_never_shows)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x01});
-	f.mock->notify(kPolar, {});
-	f.mock->notify(kPolar, {0x00, 0x00});
+	f.feed(kPolar, {0x01});
+	f.feed(kPolar, {});
+	f.feed(kPolar, {0x00, 0x00});
 	CHECK(Fixture::hidden(*sub));
-	CHECK(sub->snapshot().malformedPackets == 2);
+	CHECK(sub->snapshot().malformedPackets == 4); // each payload fed twice
 }
 
 TEST(manager_sudden_disconnect_hides_then_reconnects)
@@ -112,7 +122,7 @@ TEST(manager_sudden_disconnect_hides_then_reconnects)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x00, 82});
+	f.feed(kPolar, {0x00, 82});
 	CHECK(Fixture::live(*sub, 82));
 
 	f.mock->dropConnection(kPolar);
@@ -120,7 +130,7 @@ TEST(manager_sudden_disconnect_hides_then_reconnects)
 
 	CHECK(eventually([&] { return f.mock->successfulConnections(kPolar) == 2 && f.mock->liveSessions(kPolar) == 1; }));
 	CHECK(Fixture::hidden(*sub)); // Reconnected, waiting for a fresh measurement.
-	f.mock->notify(kPolar, {0x00, 90});
+	f.feed(kPolar, {0x00, 90});
 	CHECK(Fixture::live(*sub, 90));
 }
 
@@ -129,7 +139,7 @@ TEST(manager_sensor_off_then_on_again)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x00, 70});
+	f.feed(kPolar, {0x00, 70});
 	f.mock->setPresent(kPolar, false);
 	f.mock->dropConnection(kPolar, "sensor turned off");
 	CHECK(Fixture::hidden(*sub));
@@ -140,7 +150,7 @@ TEST(manager_sensor_off_then_on_again)
 
 	f.mock->setPresent(kPolar, true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x00, 71});
+	f.feed(kPolar, {0x00, 71});
 	CHECK(Fixture::live(*sub, 71));
 }
 
@@ -160,7 +170,7 @@ TEST(manager_data_stops_hidden_within_timeout)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x00, 82});
+	f.feed(kPolar, {0x00, 82});
 	uint16_t bpm = 0;
 	uint64_t gen = 0;
 	const int64_t shortTimeout = 2LL * 1000000000LL;
@@ -173,9 +183,9 @@ TEST(manager_contact_lost)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x06, 75});
+	f.feed(kPolar, {0x06, 75});
 	CHECK(Fixture::live(*sub, 75));
-	f.mock->notify(kPolar, {0x04, 75});
+	f.feed(kPolar, {0x04, 75});
 	CHECK(Fixture::hidden(*sub));
 	CHECK(sub->snapshot().contactLost);
 }
@@ -235,6 +245,8 @@ TEST(manager_silent_sensor_backs_off)
 	cfg.backoffInitial = ms(300);
 	cfg.backoffMax = ms(5000);
 	cfg.silenceReconnect = ms(100);
+	cfg.silentBackoffInitial = ms(300);
+	cfg.silentBackoffMax = ms(5000);
 	Fixture f(cfg);
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	std::this_thread::sleep_for(ms(2000));
@@ -251,13 +263,13 @@ TEST(manager_shared_connection_for_two_sources)
 	auto b = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
 	CHECK_EQ(f.manager->activeLinkCount(), size_t(1));
-	f.mock->notify(kPolar, {0x00, 101});
+	f.feed(kPolar, {0x00, 101});
 	CHECK(Fixture::live(*a, 101));
 	CHECK(Fixture::live(*b, 101));
 	CHECK_EQ(f.mock->successfulConnections(kPolar), 1);
 
 	a.reset(); // One source removed: connection stays for the other.
-	f.mock->notify(kPolar, {0x00, 102});
+	f.feed(kPolar, {0x00, 102});
 	CHECK(Fixture::live(*b, 102));
 	CHECK_EQ(f.mock->liveSessions(kPolar), 1);
 
@@ -271,7 +283,7 @@ TEST(manager_switching_device_has_no_stale_data)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x00, 150});
+	f.feed(kPolar, {0x00, 150});
 	CHECK(Fixture::live(*sub, 150));
 
 	sub = f.manager->subscribe(ident(kWahoo), true); // old subscription released
@@ -279,9 +291,9 @@ TEST(manager_switching_device_has_no_stale_data)
 	CHECK(Fixture::hidden(*sub));
 	CHECK(eventually([&] { return f.mock->liveSessions(kWahoo) == 1; }));
 	CHECK(Fixture::hidden(*sub));
-	f.mock->notify(kPolar, {0x00, 151}); // old device data must not leak
+	f.feed(kPolar, {0x00, 151}); // old device data must not leak
 	CHECK(Fixture::hidden(*sub));
-	f.mock->notify(kWahoo, {0x00, 66});
+	f.feed(kWahoo, {0x00, 66});
 	CHECK(Fixture::live(*sub, 66));
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 0; }));
 }
@@ -291,14 +303,14 @@ TEST(manager_bluetooth_off_and_on)
 	Fixture f;
 	auto sub = f.manager->subscribe(ident(kPolar), true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
-	f.mock->notify(kPolar, {0x00, 88});
+	f.feed(kPolar, {0x00, 88});
 	f.mock->setBluetoothOn(false);
 	CHECK(Fixture::hidden(*sub));
 	CHECK(eventually([&] { return sub->snapshot().state == SensorState::BluetoothOff; }));
 	f.mock->setBluetoothOn(true);
 	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
 	CHECK(Fixture::hidden(*sub));
-	f.mock->notify(kPolar, {0x00, 89});
+	f.feed(kPolar, {0x00, 89});
 	CHECK(Fixture::live(*sub, 89));
 }
 
@@ -409,7 +421,105 @@ TEST(manager_stress_subscribe_release)
 	for (int i = 0; i < 50; ++i) {
 		auto a = f.manager->subscribe(ident(i % 2 ? kPolar : kWahoo), true);
 		if (i % 5 == 0)
-			f.mock->notify(kPolar, {0x00, 60});
+			f.feed(kPolar, {0x00, 60});
 	}
 	CHECK(eventually([&] { return f.manager->activeLinkCount() == 0; }));
+}
+
+TEST(manager_single_replayed_reading_is_not_shown)
+{
+	// A watch with broadcasting off may replay one stored value on subscription.
+	Fixture f;
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
+	f.mock->notify(kPolar, {0x00, 88});
+	CHECK(Fixture::hidden(*sub));
+	f.mock->notify(kPolar, {0x00, 89}); // second reading: really streaming
+	CHECK(Fixture::live(*sub, 89));
+}
+
+TEST(manager_fitness_machine_and_pulse_oximeter)
+{
+	auto backend = std::make_unique<MockBackend>();
+	MockBackend *mock = backend.get();
+	MockDevice bike;
+	bike.identity = ident(0xB1000000000AULL);
+	bike.kind = MeasurementKind::IndoorBike;
+	mock->addDevice(bike);
+	MockDevice oxi;
+	oxi.identity = ident(0xB1000000000BULL);
+	oxi.kind = MeasurementKind::PlxContinuous;
+	mock->addDevice(oxi);
+	auto manager = BleManager::create(std::move(backend), Fixture::fastConfig());
+	auto a = manager->subscribe(bike.identity, true);
+	auto b = manager->subscribe(oxi.identity, true);
+	CHECK(eventually([&] { return mock->liveSessions(bike.identity.address) == 1 && mock->liveSessions(oxi.identity.address) == 1; }));
+	for (int i = 0; i < 2; ++i) {
+		mock->notify(bike.identity.address, {0x01, 0x02, 131});            // FTMS HR 131
+		mock->notify(oxi.identity.address, {0x00, 0x61, 0x00, 0x48, 0x00}); // PLX PR 72
+	}
+	CHECK(Fixture::live(*a, 131));
+	CHECK(Fixture::live(*b, 72));
+	manager->shutdown();
+}
+
+TEST(manager_reports_adapter_problems)
+{
+	Fixture f;
+	f.mock->setAdapterState(AdapterState::NoLowEnergy);
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	CHECK(eventually([&] { return sub->snapshot().state == SensorState::BluetoothOff; }));
+	CHECK(friendlyStatus(sub->snapshot(), monotonicNs(), kTimeout).find("Bluetooth LE") != std::string::npos);
+	f.mock->setAdapterState(AdapterState::Ready);
+	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
+}
+
+TEST(manager_lists_paired_devices_to_scan_listeners)
+{
+	auto backend = std::make_unique<MockBackend>();
+	MockBackend *mock = backend.get();
+	MockDevice paired;
+	paired.identity = ident(0xC0FFEE000001ULL);
+	paired.name = "Paired strap";
+	paired.paired = true;
+	mock->addDevice(paired);
+	auto manager = BleManager::create(std::move(backend), Fixture::fastConfig());
+	std::mutex m;
+	std::vector<Advertisement> got;
+	auto token = manager->addScanListener([&](const Advertisement &a) {
+		std::lock_guard<std::mutex> lock(m);
+		got.push_back(a);
+	});
+	manager->requestPairedDevices();
+	CHECK(eventually([&] {
+		std::lock_guard<std::mutex> lock(m);
+		return got.size() == 1 && got[0].paired && got[0].name == "Paired strap";
+	}));
+	token.reset();
+	manager->shutdown();
+}
+
+TEST(manager_logs_connection_events_once)
+{
+	Fixture f;
+	std::mutex m;
+	std::vector<std::string> events;
+	f.manager->setEventLog([&](const std::string &, const std::string &msg) {
+		std::lock_guard<std::mutex> lock(m);
+		events.push_back(msg);
+	});
+	f.mock->setPresent(kPolar, false);
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	CHECK(eventually([&] { return f.mock->connectAttempts(kPolar) >= 3; }));
+	f.mock->setPresent(kPolar, true);
+	CHECK(eventually([&] { return f.mock->liveSessions(kPolar) == 1; }));
+	f.mock->dropConnection(kPolar, "out of range");
+	CHECK(eventually([&] {
+		std::lock_guard<std::mutex> lock(m);
+		return events.size() >= 3;
+	}));
+	std::lock_guard<std::mutex> lock(m);
+	CHECK(events[0].find("not found") != std::string::npos);
+	CHECK(events[1].find("connected to Polar H10") != std::string::npos); // repeated "not found" deduplicated
+	CHECK(events[2].find("disconnected") != std::string::npos);
 }

@@ -31,6 +31,7 @@ private:
 	struct Nearby {
 		Advertisement adv;
 		int64_t lastSeenNs = 0;
+		bool paired = false; // Listed by Windows as a paired device.
 	};
 
 	void startScan();

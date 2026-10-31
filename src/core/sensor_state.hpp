@@ -11,6 +11,9 @@
 
 namespace blehr {
 
+// Valid readings required in a connection before anything is shown.
+constexpr uint32_t kReadingsToConfirm = 2;
+
 enum class SensorState {
 	NotConfigured,
 	Searching,
@@ -36,7 +39,8 @@ struct SensorSnapshot {
 	bool contactLost = false;
 	uint64_t connectionGeneration = 0; // Increments for every new connection.
 	uint64_t malformedPackets = 0;
-	uint64_t validPackets = 0; // Lifetime count of displayable measurements.
+	uint64_t validPackets = 0;      // Lifetime count of displayed (confirmed) measurements.
+	uint32_t validInConnection = 0; // Valid readings received in the current connection.
 	std::string detail; // Short troubleshooting text for the settings UI only.
 };
 
@@ -63,7 +67,7 @@ public:
 	void measurement(const HeartRateMeasurement &m, int64_t nowNs);
 	void disconnected(const std::string &detail = {});
 	void unsupported(const std::string &detail);
-	void bluetoothOff();
+	void bluetoothOff(const std::string &detail = {});
 	void error(const std::string &detail);
 	void stopped(); // Back to NotConfigured.
 

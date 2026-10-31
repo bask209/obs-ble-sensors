@@ -26,10 +26,21 @@ struct DeviceIdentity {
 	{
 		return address == other.address && addressType == other.addressType;
 	}
+	// Random resolvable private address (top bits 01): rotates periodically unless the
+	// device is paired with Windows, which then reports its stable identity address.
+	bool isResolvablePrivate() const { return addressType == AddressType::Random && ((address >> 46) & 0x3) == 0x1; }
 };
 
 std::string formatAddress(uint64_t address);
 std::optional<uint64_t> parseAddress(const std::string &text);
 std::optional<DeviceIdentity> identityFromKey(const std::string &key);
+
+} // namespace blehr
+
+namespace blehr {
+
+// Device names come from radio advertisements and are attacker-controlled. Keep at most
+// 64 bytes of valid UTF-8, drop control characters, trim spaces.
+std::string sanitizeDeviceName(const std::string &raw);
 
 } // namespace blehr

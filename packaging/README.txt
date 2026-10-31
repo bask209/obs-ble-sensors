@@ -4,8 +4,10 @@ OBS BLE Sensors - live heart rate from Bluetooth LE sensors in OBS Studio
 Requirements
   - Windows 10 (1903+) or Windows 11, 64-bit, with Bluetooth LE
   - OBS Studio 31 or newer (tested with OBS 32.2.2)
-  - A standard Bluetooth LE heart-rate sensor (Heart Rate Service 0x180D),
-    e.g. a chest strap or an arm band.
+  - Bluetooth 4.0+ (LE) adapter
+  - A device using an open Bluetooth heart-rate standard: heart-rate straps/bands,
+    watches in heart-rate broadcast mode, smart bikes/treadmills/rowers (FTMS),
+    or pulse oximeters (PLX)
 
 Install
   1. Close OBS Studio.

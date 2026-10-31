@@ -7,6 +7,7 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege by default; jobs that publish request more explicitly.
 permissions:
   contents: read
 
@@ -20,6 +21,8 @@ jobs:
         os: [windows-2022, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Configure
         run: cmake -S tests -B build_tests -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -27,15 +30,49 @@ jobs:
       - name: Run
         run: ctest --test-dir build_tests -C Release --output-on-failure
 
+  sanitizers:
+    name: Unit tests under AddressSanitizer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            flags: -fsanitize=address -Zi -EHsc
+          - os: ubuntu-24.04
+            flags: -fsanitize=address,undefined -fno-omit-frame-pointer -g
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure
+        shell: bash
+        run: MSYS_NO_PATHCONV=1 cmake -S tests -B build_asan -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_CXX_FLAGS=${{ matrix.flags }}"
+      - name: Build
+        run: cmake --build build_asan --config RelWithDebInfo --target ble-sensors-tests --parallel
+      - name: Run (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asan = Split-Path (Get-ChildItem -Recurse "${env:ProgramFiles}\Microsoft Visual Studio" -Filter clang_rt.asan_dynamic-x86_64.dll | Where-Object FullName -match 'Hostx64\\x64' | Select-Object -First 1).FullName
+          $env:PATH = "$asan;$env:PATH"
+          ./build_asan/RelWithDebInfo/ble-sensors-tests.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Run (Linux)
+        if: runner.os == 'Linux'
+        run: ./build_asan/ble-sensors-tests
+
   windows-plugin:
     name: Windows x64 plugin
     runs-on: windows-2022
-    needs: unit-tests
+    needs: [unit-tests, sanitizers]
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Cache OBS dependencies
         uses: actions/cache@v4
         with:
@@ -51,12 +88,19 @@ jobs:
           if (Select-String -Path $dll -Pattern 'Simulated HRM' -SimpleMatch -Quiet) { throw 'mock backend found in release DLL' }
       - name: Package
         run: ./scripts/package.ps1 -SkipBuild
+      - name: Checksums
+        run: |
+          Get-ChildItem release/*.zip, release/*-setup.exe | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content -Encoding ascii release/SHA256SUMS.txt
+          Get-Content release/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: obs-ble-sensors-windows-x64
           path: |
             release/*.zip
             release/*-setup.exe
+            release/SHA256SUMS.txt
 
   release:
     name: GitHub release
@@ -65,14 +109,22 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write     # build-provenance attestation
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: obs-ble-sensors-windows-x64
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            *-setup.exe
+            *.zip
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
           case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "${GITHUB_REF_NAME}" *-setup.exe *.zip --repo "${GITHUB_REPOSITORY}" --title "OBS BLE Sensors ${GITHUB_REF_NAME}" --generate-notes ${prerelease}
+          gh release create "${GITHUB_REF_NAME}" *-setup.exe *.zip SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --title "OBS BLE Sensors ${GITHUB_REF_NAME}" --generate-notes ${prerelease}

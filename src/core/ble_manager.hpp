@@ -23,6 +23,9 @@ namespace blehr {
 struct ManagerConfig {
 	std::chrono::milliseconds backoffInitial{1000};
 	std::chrono::milliseconds backoffMax{15000};
+	// For devices that connect but send no heart rate (e.g. watch broadcast turned off).
+	std::chrono::milliseconds silentBackoffInitial{15000};
+	std::chrono::milliseconds silentBackoffMax{120000};
 	// Reconnect when a connection delivers no notification at all for this long.
 	std::chrono::milliseconds silenceReconnect{20000};
 	// Minimum spacing between advertisement-triggered early reconnect attempts.
@@ -94,6 +97,12 @@ public:
 	std::unique_ptr<ScanToken> addScanListener(ScanFn fn);
 
 	void setConnectedCallback(ConnectedFn fn);
+	// Receives short, human-readable connection events (deduplicated per sensor).
+	using EventLogFn = std::function<void(const std::string &key, const std::string &message)>;
+	void setEventLog(EventLogFn fn);
+	// Asynchronously reports the devices paired with Windows to the scan listeners
+	// (Advertisement::paired = true). Non-blocking.
+	void requestPairedDevices();
 
 	// Diagnostics / tests.
 	size_t activeLinkCount() const;
@@ -109,6 +118,7 @@ private:
 	void onAdvertisement(const Advertisement &adv);
 	void updateScanDemand();
 	void reapFinishedLocked();
+	void logEvent(Link &link, const std::string &message);
 
 	std::unique_ptr<BleBackend> backend_;
 	ManagerConfig config_;
@@ -118,6 +128,12 @@ private:
 	std::vector<std::shared_ptr<Link>> zombies_; // Stopping links awaiting join.
 	std::vector<std::shared_ptr<ScanSlot>> scanSlots_;
 	ConnectedFn connected_;
+	EventLogFn eventLog_;
+	struct Helper {
+		std::thread thread;
+		std::shared_ptr<std::atomic<bool>> done;
+	};
+	std::vector<Helper> helpers_; // Paired-device queries; reaped when done, joined at shutdown.
 	bool stopping_ = false;
 
 	std::mutex scanMutex_; // Serializes backend scan start/stop. Order: scanMutex_ -> mutex_.

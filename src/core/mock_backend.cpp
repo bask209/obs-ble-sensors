@@ -57,8 +57,13 @@ bool MockBackend::notify(uint64_t address, const std::vector<uint8_t> &payload)
 			return false;
 		sinks = it->second.sinks;
 	}
+	MeasurementKind kind = MeasurementKind::HeartRateService;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		kind = devices_[address].device.kind;
+	}
 	for (auto &sink : sinks)
-		sink->data(payload.data(), payload.size());
+		sink->data(kind, payload.data(), payload.size());
 	return !sinks.empty();
 }
 
@@ -167,10 +172,33 @@ bool MockBackend::scanHealthy()
 	return bluetoothOn_;
 }
 
-bool MockBackend::bluetoothAvailable()
+AdapterState MockBackend::adapterState()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	return bluetoothOn_;
+	if (!bluetoothOn_)
+		return AdapterState::Off;
+	return adapterState_;
+}
+
+void MockBackend::setAdapterState(AdapterState state)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	adapterState_ = state;
+}
+
+std::vector<Advertisement> MockBackend::pairedDevices()
+{
+	std::vector<Advertisement> out;
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &kv : devices_) {
+		if (!kv.second.device.paired)
+			continue;
+		Advertisement a;
+		a.identity = kv.second.device.identity;
+		a.name = kv.second.device.name;
+		out.push_back(a);
+	}
+	return out;
 }
 
 ConnectResult MockBackend::connect(const DeviceIdentity &identity, CancelToken &cancel,
@@ -220,6 +248,7 @@ ConnectResult MockBackend::connect(const DeviceIdentity &identity, CancelToken &
 	st.sinks.push_back(sink);
 	result.status = ConnectStatus::Connected;
 	result.deviceName = st.device.name;
+	result.kind = st.device.kind;
 	result.windowsDeviceId = "MOCK#" + identity.key();
 	result.session = std::make_unique<Session>(this, identity.address, sink.get());
 	return result;

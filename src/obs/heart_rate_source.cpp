@@ -60,10 +60,14 @@ constexpr const char *S_HALO = "halo";
 constexpr const char *S_HALO_COLOR = "halo_color";
 constexpr const char *S_HALO_SIZE = "halo_size";
 constexpr const char *S_HALO_OPACITY = "halo_opacity";
+constexpr const char *S_PAUSE_HIDDEN = "pause_when_hidden";
 
 enum NumberMode : int { NumberInvert = 0, NumberFixedColor = 1 };
 
 constexpr int64_t kSecondNs = 1000000000LL;
+// How long a source may be invisible before its Bluetooth link is released. Covers
+// ordinary scene switching without reconnect gaps.
+constexpr int64_t kPauseGraceNs = 30 * kSecondNs;
 
 const char *T(const char *key)
 {
@@ -95,6 +99,12 @@ struct Look {
 struct GlyphLayer {
 	obs_source_t *child = nullptr;
 	gs_texrender_t *mask = nullptr;
+	gs_texrender_t *halo = nullptr; // Baked contrast ring for `mask`.
+	uint64_t maskSerial = 0;     // Bumped on every capture.
+	std::string haloFor;
+	float haloRadius = -1.0f;
+	uint64_t haloMaskSerial = 0;
+	uint32_t haloCx = 0, haloCy = 0;
 	std::string requested;      // Text last sent to the child.
 	bool requestedLive = false; // Whether that text is a real measurement.
 	uint64_t readyTick = 0;     // Child has applied `requested` from this tick on.
@@ -155,6 +165,7 @@ struct GlyphLayer {
 			return false;
 		captured = requested;
 		capturedLive = requestedLive;
+		maskSerial++;
 		cx = w;
 		cy = h;
 		return true;
@@ -171,6 +182,8 @@ public:
 		char *path = obs_module_file("effects/hr_overlay.effect");
 		obs_enter_graphics();
 		heart_.mask = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		heart_.halo = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		number_.halo = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		number_.mask = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		char *errors = nullptr;
 		effect_ = path ? gs_effect_create_from_file(path, &errors) : nullptr;
@@ -197,6 +210,8 @@ public:
 		}
 		obs_enter_graphics();
 		gs_texrender_destroy(heart_.mask);
+		gs_texrender_destroy(heart_.halo);
+		gs_texrender_destroy(number_.halo);
 		gs_texrender_destroy(number_.mask);
 		gs_effect_destroy(effect_);
 		obs_leave_graphics();
@@ -213,25 +228,19 @@ public:
 		const int64_t timeout = std::clamp<int64_t>(obs_data_get_int(settings, S_TIMEOUT), 2, 15);
 		timeoutNs_.store(timeout * kSecondNs);
 
+		pauseWhenHidden_.store(obs_data_get_bool(settings, S_PAUSE_HIDDEN));
 		{
 			std::lock_guard<std::mutex> lock(subMutex_);
+			autoReconnect_ = autoReconnect;
 			if (key != deviceKey_) {
 				sub_.reset();
 				deviceKey_ = key;
-				if (!key.empty()) {
-					std::optional<DeviceIdentity> identity;
-					if (auto saved = plugin::registry().find(key))
-						identity = saved->identity;
-					else
-						identity = identityFromKey(key);
-					auto mgr = plugin::manager();
-					if (identity && mgr)
-						sub_ = mgr->subscribe(*identity, autoReconnect);
-				}
 				deviceChanged_.store(true); // Never show a mask rendered for the old device.
-			} else if (sub_) {
-				sub_->setAutoReconnect(autoReconnect);
 			}
+			if (sub_)
+				sub_->setAutoReconnect(autoReconnect);
+			else if (wantConnection_)
+				subscribeLocked();
 		}
 
 		// Look: read on the graphics thread only (update is deferred there; create
@@ -259,6 +268,24 @@ public:
 		if (!number_.child)
 			return;
 		tickCount_++;
+
+		// Release the Bluetooth link when this source has not been visible anywhere
+		// (program, preview, projectors) for a while; reconnect as soon as it shows again.
+		const int64_t now = monotonicNs();
+		if (obs_source_showing(self_))
+			lastShownNs_ = now;
+		const bool want = !pauseWhenHidden_.load() || now - lastShownNs_ < kPauseGraceNs;
+		{
+			std::lock_guard<std::mutex> lock(subMutex_);
+			if (want != wantConnection_) {
+				wantConnection_ = want;
+				if (want)
+					subscribeLocked();
+				else
+					sub_.reset();
+				deviceChanged_.store(true); // Never reuse a mask from before the pause.
+			}
+		}
 
 		uint16_t bpm = 0;
 		uint64_t generation = 0;
@@ -353,6 +380,8 @@ public:
 		std::lock_guard<std::mutex> lock(subMutex_);
 		if (deviceKey_.empty())
 			return T("Status.NoSensor");
+		if (!sub_ && !wantConnection_)
+			return T("Status.Paused");
 		if (!sub_)
 			return T("Status.Unavailable");
 		const SensorSnapshot snap = sub_->snapshot();
@@ -369,6 +398,20 @@ public:
 	obs_source_t *source() const { return self_; }
 
 private:
+	void subscribeLocked()
+	{
+		if (deviceKey_.empty() || sub_)
+			return;
+		std::optional<DeviceIdentity> identity;
+		if (auto saved = plugin::registry().find(deviceKey_))
+			identity = saved->identity;
+		else
+			identity = identityFromKey(deviceKey_);
+		auto mgr = plugin::manager();
+		if (identity && mgr)
+			sub_ = mgr->subscribe(*identity, autoReconnect_);
+	}
+
 	bool liveBpm(uint16_t &bpm, uint64_t &generation)
 	{
 		std::lock_guard<std::mutex> lock(subMutex_);
@@ -390,25 +433,68 @@ private:
 		gs_matrix_pop();
 	}
 
-	// One pass: a ring of `haloSize` output pixels around the glyph, never under it.
-	void drawHalo(const GlyphLayer &layer, float x, float y, float scale)
+	// The halo ring is baked into its own texture only when the glyph or halo size changes
+	// (about once per second at most), so each frame costs a plain textured quad instead
+	// of a 32-sample shader per pixel. The heart's halo is baked at scale 1 and scales with
+	// the beat.
+	bool ensureHalo(GlyphLayer &layer)
 	{
-		gs_texture_t *tex = gs_texrender_get_texture(layer.mask);
-		if (!tex || scale <= 0.0f)
-			return;
-		const float r = look_.haloSize / scale; // In mask pixels.
+		gs_texture_t *maskTex = gs_texrender_get_texture(layer.mask);
+		if (!maskTex || !layer.halo || layer.captured.empty())
+			return false;
+		const float r = look_.haloSize;
+		if (layer.haloFor == layer.captured && layer.haloRadius == r && layer.haloMaskSerial == layer.maskSerial)
+			return true;
+		const uint32_t w = uint32_t(std::ceil(float(layer.cx) + 2.0f * r));
+		const uint32_t h = uint32_t(std::ceil(float(layer.cy) + 2.0f * r));
 		vec2 size;
 		vec2_set(&size, float(layer.cx), float(layer.cy));
+		vec4 white;
+		vec4_set(&white, 1.0f, 1.0f, 1.0f, 1.0f);
+		gs_texrender_reset(layer.halo);
+		gs_blend_state_push();
+		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+		bool ok = false;
+		if (gs_texrender_begin(layer.halo, w, h)) {
+			vec4 clear;
+			vec4_zero(&clear);
+			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+			gs_ortho(0.0f, float(w), 0.0f, float(h), -100.0f, 100.0f);
+			gs_effect_set_texture(paramImage_, maskTex);
+			gs_effect_set_vec4(paramTint_, &white);
+			gs_effect_set_vec2(paramMaskSize_, &size);
+			gs_effect_set_float(paramHaloRadius_, r);
+			while (gs_effect_loop(effect_, "Halo"))
+				gs_draw_sprite(maskTex, 0, w, h);
+			gs_texrender_end(layer.halo);
+			ok = true;
+		}
+		gs_blend_state_pop();
+		if (!ok)
+			return false;
+		layer.haloFor = layer.captured;
+		layer.haloRadius = r;
+		layer.haloMaskSerial = layer.maskSerial;
+		layer.haloCx = w;
+		layer.haloCy = h;
+		return true;
+	}
+
+	void drawHalo(GlyphLayer &layer, float x, float y, float scale)
+	{
+		if (!ensureHalo(layer))
+			return;
+		gs_texture_t *tex = gs_texrender_get_texture(layer.halo);
+		if (!tex)
+			return;
+		const float r = look_.haloSize;
 		gs_effect_set_texture(paramImage_, tex);
 		gs_effect_set_vec4(paramTint_, &look_.haloColor);
-		gs_effect_set_vec2(paramMaskSize_, &size);
-		gs_effect_set_float(paramHaloRadius_, r);
 		gs_matrix_push();
 		gs_matrix_translate3f(x - r * scale, y - r * scale, 0.0f);
 		gs_matrix_scale3f(scale, scale, 1.0f);
-		while (gs_effect_loop(effect_, "Halo"))
-			gs_draw_sprite(tex, 0, uint32_t(std::ceil(float(layer.cx) + 2.0f * r)),
-				       uint32_t(std::ceil(float(layer.cy) + 2.0f * r)));
+		while (gs_effect_loop(effect_, "Tint"))
+			gs_draw_sprite(tex, 0, layer.haloCx, layer.haloCy);
 		gs_matrix_pop();
 	}
 
@@ -510,6 +596,10 @@ private:
 	std::mutex subMutex_;
 	std::unique_ptr<BleManager::Subscription> sub_;
 	std::string deviceKey_;
+	bool autoReconnect_ = true;   // Guarded by subMutex_.
+	bool wantConnection_ = true;  // Guarded by subMutex_.
+	std::atomic<bool> pauseWhenHidden_{true};
+	int64_t lastShownNs_ = monotonicNs(); // Graphics thread; grace period from creation.
 
 	std::atomic<int64_t> timeoutNs_{5 * kSecondNs};
 	std::atomic<bool> deviceChanged_{false};
@@ -632,6 +722,7 @@ obs_properties_t *getProperties(void *data)
 	obs_properties_add_button(props, S_REFRESH, T("RefreshStatus"), onRefreshClicked);
 	obs_properties_add_button(props, S_RECONNECT, T("ReconnectNow"), onReconnectClicked);
 	obs_properties_add_bool(props, S_AUTO_RECONNECT, T("AutoReconnect"));
+	obs_properties_add_bool(props, S_PAUSE_HIDDEN, T("PauseWhenHidden"));
 	obs_property_t *timeout = obs_properties_add_int_slider(props, S_TIMEOUT, T("StaleTimeout"), 2, 15, 1);
 	obs_property_int_set_suffix(timeout, " s");
 
@@ -679,6 +770,7 @@ void getDefaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, S_DEVICE, "");
 	obs_data_set_default_bool(settings, S_AUTO_RECONNECT, true);
+	obs_data_set_default_bool(settings, S_PAUSE_HIDDEN, true);
 	obs_data_set_default_int(settings, S_TIMEOUT, 5);
 	obs_data_set_default_int(settings, S_STYLE, int(kDefaultDisplayStyle));
 

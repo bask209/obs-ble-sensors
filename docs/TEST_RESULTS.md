@@ -96,3 +96,25 @@ Run after the Bluetooth safety hardening, the resource optimization and the new 
 
 Still not verified: a real heart-rate strap, clicking through the dialog by hand, the invert mode
 under the OBS GPU-scaled preview with filters applied (documented as unsupported).
+
+## 7. Final review round (v1.0.0)
+
+- Unit tests: **69/69**, also under **AddressSanitizer** with 0 errors. New tests: FTMS bike,
+  treadmill, rower and cross-trainer heart rate; PLX pulse rate (SFLOAT, NaN); 2.1 M fuzzed
+  packets over all formats; random packets through the state machine; device-name sanitizing;
+  hostile identity keys; first reading needs confirmation; silent-device back-off; adapter states;
+  paired-device listing; event logging.
+- Real Bluetooth (`ble-probe`): adapter state "ready"; paired devices listed (phone, game
+  controller). Govee thermometer: cached, then uncached discovery, then **Unsupported**, never
+  retried. Absent address keeps searching. Galaxy Watch5 Pro: the cached discovery found its
+  heart-rate service and reached the subscription step. The watch did not answer at that moment
+  (not broadcasting, or its private address had rotated), and the new private-address guidance
+  was shown.
+- User's OBS log (v1.0.0-beta.1, Galaxy Watch): 19 min stable live data, then a reconnect every
+  ≈22 s while the watch sent no data. This led to the confirmation rule and the silent-device
+  back-off.
+- Real OBS 32.2.2 (portable, dev build): pause-when-hidden released the hidden source's link after
+  exactly 30 s while a visible source kept its shared link. Pre-baked halo renders identically.
+  0 skipped frames out of 7,567 at 1080p60; no flicker across 160 consecutive captures. Clean
+  shutdown with 0 memory leaks.
+- Release DLL: Control Flow Guard, CET-compatible, ASLR (high entropy) and DEP confirmed with `dumpbin`.

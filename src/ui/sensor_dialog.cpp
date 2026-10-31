@@ -26,6 +26,18 @@ constexpr int64_t kSecondNs = 1000000000LL;
 constexpr int64_t kNearbyForgetNs = 30 * kSecondNs;
 constexpr int64_t kStatusTimeoutNs = 5 * kSecondNs;
 constexpr int kKeyRole = Qt::UserRole;
+constexpr size_t kMaxNearby = 300;
+
+// Message boxes that never interpret text as HTML: device names come from the radio.
+int askPlain(QWidget *parent, const QString &title, const QString &text,
+	     QMessageBox::StandardButtons buttons = QMessageBox::Yes | QMessageBox::No,
+	     QMessageBox::StandardButton defaultButton = QMessageBox::No, QMessageBox::Icon icon = QMessageBox::Question)
+{
+	QMessageBox box(icon, title, text, buttons, parent);
+	box.setTextFormat(Qt::PlainText);
+	box.setDefaultButton(defaultButton);
+	return box.exec();
+}
 
 QString q(const std::string &s)
 {
@@ -136,13 +148,27 @@ void SensorDialog::startScan()
 	scanToken_ = mgr->addScanListener([this](const Advertisement &adv) {
 		QMetaObject::invokeMethod(this, [this, adv] { onAdvertisement(adv); }, Qt::QueuedConnection);
 	});
+	mgr->requestPairedDevices(); // Delivered through the same listener, off the UI thread.
 	refreshStatus();
 }
 
 void SensorDialog::onAdvertisement(const Advertisement &adv)
 {
 	const std::string key = adv.identity.key();
+	// Bound memory even if someone floods the air with fake advertisements.
+	if (nearby_.size() >= kMaxNearby && !nearby_.count(key) && !adv.paired && !adv.advertisesHeartRate)
+		return;
 	auto &entry = nearby_[key];
+	if (adv.paired) {
+		const bool changed = !entry.paired;
+		entry.paired = true;
+		entry.adv.identity = adv.identity;
+		if (entry.adv.name.empty())
+			entry.adv.name = adv.name;
+		if (changed)
+			rebuild();
+		return;
+	}
 	const std::string previousName = entry.adv.name;
 	const bool previousHr = entry.adv.advertisesHeartRate;
 	const bool isNew = entry.lastSeenNs == 0;
@@ -193,19 +219,24 @@ void SensorDialog::rebuild()
 
 	for (const auto &kv : nearby_) {
 		const Advertisement &a = kv.second.adv;
-		if (now - kv.second.lastSeenNs >= kNearbyForgetNs)
+		const bool seen = kv.second.lastSeenNs != 0 && now - kv.second.lastSeenNs < kNearbyForgetNs;
+		if (!seen && !kv.second.paired)
 			continue;
 		if (plugin::registry().find(kv.first))
 			continue;
-		if (!a.advertisesHeartRate && !showAll_->isChecked())
+		if (!a.advertisesHeartRate && !kv.second.paired && !showAll_->isChecked())
 			continue;
 		Row r;
 		r.key = kv.first;
 		r.name = a.name.empty() ? QStringLiteral("Unnamed device (") + q(formatAddress(a.identity.address)) + ")"
 					: q(a.name);
-		r.type = a.advertisesHeartRate ? QStringLiteral("Heart-rate sensor")
-					       : QStringLiteral("Other device - may be unsupported");
-		r.status = QStringLiteral("Nearby, ") + signalText(a.rssi);
+		if (kv.second.paired)
+			r.type = a.advertisesHeartRate ? QStringLiteral("Paired - heart rate") : QStringLiteral("Paired with Windows");
+		else
+			r.type = a.advertisesHeartRate ? QStringLiteral("Heart-rate device")
+						       : QStringLiteral("Other device - may be unsupported");
+		r.status = seen ? QStringLiteral("Nearby, ") + signalText(a.rssi)
+				: QStringLiteral("Paired - not advertising right now");
 		rows.push_back(std::move(r));
 	}
 
@@ -240,6 +271,13 @@ void SensorDialog::rebuild()
 
 void SensorDialog::refreshStatus()
 {
+	const int64_t nowNs = monotonicNs();
+	for (auto it = nearby_.begin(); it != nearby_.end();) {
+		if (!it->second.paired && nowNs - it->second.lastSeenNs >= kNearbyForgetNs)
+			it = nearby_.erase(it);
+		else
+			++it;
+	}
 	rebuild();
 	const int64_t elapsed = monotonicNs() - scanStartedNs_;
 	int hrNearby = 0;
@@ -305,9 +343,21 @@ bool SensorDialog::saveWithAlias(const std::string &key)
 	auto it = nearby_.find(key);
 	if (it != nearby_.end())
 		d.lastKnownName = it->second.adv.name;
+	if (it != nearby_.end() && !it->second.adv.identity.windowsDeviceId.empty())
+		d.identity.windowsDeviceId = it->second.adv.identity.windowsDeviceId;
 	if (!plugin::registry().save(d))
-		QMessageBox::warning(this, QStringLiteral("Save sensor"),
-				     QStringLiteral("The sensor could not be saved to disk. It will work until OBS closes."));
+		askPlain(this, QStringLiteral("Save sensor"),
+			 QStringLiteral("The sensor could not be saved to disk. It will work until OBS closes."),
+			 QMessageBox::Ok, QMessageBox::Ok, QMessageBox::Warning);
+	const bool paired = it != nearby_.end() && it->second.paired;
+	if (identity->isResolvablePrivate() && !paired)
+		askPlain(this, QStringLiteral("Tip: pair this device with Windows"),
+			 QStringLiteral("This device uses a changing (private) Bluetooth address, as many watches and "
+					"phones do. It works now, but once the address changes OBS cannot recognise "
+					"it again, and it never guesses by name.\n\nFor reliable automatic "
+					"reconnection, pair it once in Windows Settings > Bluetooth & devices > Add "
+					"device, then select the \"Paired with Windows\" entry here."),
+			 QMessageBox::Ok, QMessageBox::Ok, QMessageBox::Information);
 	rebuild();
 	return true;
 }
@@ -345,7 +395,7 @@ void SensorDialog::onForget()
 	QString text = QStringLiteral("Forget \"%1\"?").arg(q(saved->displayName()));
 	if (key == currentKey_)
 		text += QStringLiteral("\n\nThis source is using it. It will keep using it until you select another sensor.");
-	if (QMessageBox::question(this, QStringLiteral("Forget sensor"), text) != QMessageBox::Yes)
+	if (askPlain(this, QStringLiteral("Forget sensor"), text) != QMessageBox::Yes)
 		return;
 	plugin::registry().forget(key);
 	rebuild();
@@ -357,8 +407,8 @@ void SensorDialog::onUse()
 	if (key.empty())
 		return;
 	auto near = nearby_.find(key);
-	if (!selectedIsSaved() && near != nearby_.end() && !near->second.adv.advertisesHeartRate) {
-		const auto answer = QMessageBox::question(
+	if (!selectedIsSaved() && near != nearby_.end() && !near->second.adv.advertisesHeartRate && !near->second.paired) {
+		const auto answer = askPlain(
 			this, QStringLiteral("Not a heart-rate sensor?"),
 			QStringLiteral("This device does not announce a heart-rate service, so it is probably not a "
 				       "heart-rate sensor.\n\nIf you continue, OBS connects to it once only to check. "

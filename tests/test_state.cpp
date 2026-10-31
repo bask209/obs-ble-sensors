@@ -14,6 +14,13 @@ HeartRateMeasurement hr(uint16_t bpm, uint8_t flags = 0)
 {
 	return parseHeartRateMeasurement({flags, uint8_t(bpm)});
 }
+
+// Two readings: the first reading of a connection alone is never shown.
+void prime(SensorLinkMachine &m, int64_t t, uint16_t bpm, uint8_t flags = 0)
+{
+	m.measurement(hr(bpm, flags), t);
+	m.measurement(hr(bpm, flags), t);
+}
 } // namespace
 
 TEST(visibility_not_configured_is_hidden)
@@ -43,7 +50,7 @@ TEST(visibility_valid_measurement_shows)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82), 11 * kSec);
+	prime(m, 11 * kSec, 82);
 	CHECK(shouldRender(m.snapshot(), 11 * kSec, kTimeout));
 	CHECK_EQ(m.snapshot().bpm, 82);
 	CHECK(effectiveState(m.snapshot(), 12 * kSec, kTimeout) == SensorState::Live);
@@ -53,7 +60,7 @@ TEST(visibility_stale_after_timeout)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82), 11 * kSec);
+	prime(m, 11 * kSec, 82);
 	CHECK(shouldRender(m.snapshot(), 15 * kSec, kTimeout));
 	CHECK(!shouldRender(m.snapshot(), 16 * kSec, kTimeout)); // exactly 5 s old -> hidden
 	CHECK(!shouldRender(m.snapshot(), 60 * kSec, kTimeout));
@@ -67,7 +74,7 @@ TEST(visibility_disconnect_hides_immediately)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82), 11 * kSec);
+	prime(m, 11 * kSec, 82);
 	m.disconnected("out of range");
 	CHECK(!shouldRender(m.snapshot(), 11 * kSec, kTimeout));
 	CHECK_EQ(m.snapshot().bpm, 0);
@@ -78,12 +85,12 @@ TEST(visibility_contact_lost_hides)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82, 0x06), 11 * kSec);
+	prime(m, 11 * kSec, 82, 0x06);
 	CHECK(shouldRender(m.snapshot(), 11 * kSec, kTimeout));
-	m.measurement(hr(82, 0x04), 12 * kSec); // contact supported, not detected
+	prime(m, 12 * kSec, 82, 0x04); // contact supported, not detected
 	CHECK(!shouldRender(m.snapshot(), 12 * kSec, kTimeout));
 	CHECK(m.snapshot().contactLost);
-	m.measurement(hr(84, 0x06), 13 * kSec); // contact back
+	prime(m, 13 * kSec, 84, 0x06); // contact back
 	CHECK(shouldRender(m.snapshot(), 13 * kSec, kTimeout));
 	CHECK_EQ(m.snapshot().bpm, 84);
 }
@@ -92,8 +99,8 @@ TEST(visibility_zero_bpm_hides_immediately)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82), 11 * kSec);
-	m.measurement(hr(0), 12 * kSec);
+	prime(m, 11 * kSec, 82);
+	prime(m, 12 * kSec, 0);
 	CHECK(!shouldRender(m.snapshot(), 12 * kSec, kTimeout));
 }
 
@@ -101,7 +108,7 @@ TEST(visibility_malformed_packet_does_not_refresh)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82), 11 * kSec);
+	prime(m, 11 * kSec, 82);
 	m.measurement(parseHeartRateMeasurement({0x01}), 15 * kSec);
 	CHECK_EQ(m.snapshot().malformedPackets, uint64_t(1));
 	CHECK(shouldRender(m.snapshot(), 15 * kSec, kTimeout));  // previous reading still fresh
@@ -113,7 +120,7 @@ TEST(visibility_late_packet_after_disconnect_ignored)
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
 	m.disconnected();
-	m.measurement(hr(90), 11 * kSec);
+	prime(m, 11 * kSec, 90);
 	CHECK(!shouldRender(m.snapshot(), 11 * kSec, kTimeout));
 }
 
@@ -121,7 +128,7 @@ TEST(visibility_new_connection_requires_new_measurement)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82), 11 * kSec);
+	prime(m, 11 * kSec, 82);
 	const auto gen = m.snapshot().connectionGeneration;
 	m.disconnected();
 	m.connecting();
@@ -129,7 +136,7 @@ TEST(visibility_new_connection_requires_new_measurement)
 	m.subscribed(12 * kSec);
 	CHECK(m.snapshot().connectionGeneration == gen + 1);
 	CHECK(!shouldRender(m.snapshot(), 12 * kSec, kTimeout));
-	m.measurement(hr(77), 13 * kSec);
+	prime(m, 13 * kSec, 77);
 	CHECK(shouldRender(m.snapshot(), 13 * kSec, kTimeout));
 }
 
@@ -138,7 +145,7 @@ TEST(visibility_packet_during_subscribe_is_kept)
 	SensorLinkMachine m;
 	m.connecting();
 	m.subscribing();
-	m.measurement(hr(66), 10 * kSec); // arrives before the CCCD write completes
+	prime(m, 10 * kSec, 66); // arrives before the CCCD write completes
 	m.subscribed(10 * kSec);
 	CHECK(shouldRender(m.snapshot(), 10 * kSec, kTimeout));
 	CHECK_EQ(m.snapshot().bpm, 66);
@@ -166,7 +173,7 @@ TEST(visibility_clock_going_backwards_hides)
 {
 	SensorLinkMachine m;
 	m.subscribed(10 * kSec);
-	m.measurement(hr(82), 11 * kSec);
+	prime(m, 11 * kSec, 82);
 	CHECK(!shouldRender(m.snapshot(), 10 * kSec, kTimeout));
 }
 
@@ -177,7 +184,7 @@ TEST(friendly_status_texts)
 	m.unsupported("");
 	CHECK(friendlyStatus(m.snapshot(), 0, kTimeout).find("does not provide") != std::string::npos);
 	m.subscribed(kSec);
-	m.measurement(hr(70), kSec);
+	prime(m, kSec, 70);
 	CHECK(friendlyStatus(m.snapshot(), kSec, kTimeout).find("70 BPM") != std::string::npos);
 	CHECK(friendlyStatus(m.snapshot(), 10 * kSec, kTimeout).find("waiting") != std::string::npos);
 }
@@ -273,4 +280,22 @@ TEST(registry_load_drops_duplicates_and_invalid)
 	SavedDevice invalid;
 	reg.load({a, a, invalid});
 	CHECK_EQ(reg.list().size(), size_t(1));
+}
+
+TEST(visibility_first_reading_of_connection_needs_confirmation)
+{
+	SensorLinkMachine m;
+	m.subscribing();
+	m.subscribed(10 * kSec);
+	m.measurement(hr(70), 10 * kSec); // could be a replayed stored value
+	CHECK(!shouldRender(m.snapshot(), 10 * kSec, kTimeout));
+	m.measurement(hr(71), 11 * kSec);
+	CHECK(shouldRender(m.snapshot(), 11 * kSec, kTimeout));
+	CHECK_EQ(m.snapshot().bpm, 71);
+	// Each new connection must confirm again.
+	m.disconnected();
+	m.subscribing();
+	m.subscribed(12 * kSec);
+	m.measurement(hr(72), 12 * kSec);
+	CHECK(!shouldRender(m.snapshot(), 12 * kSec, kTimeout));
 }

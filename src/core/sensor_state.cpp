@@ -125,6 +125,7 @@ void SensorLinkMachine::subscribing()
 	// is issued, before the backend reports completion.
 	invalidate();
 	snap_.connectionGeneration++;
+	snap_.validInConnection = 0;
 	snap_.state = SensorState::Subscribing;
 }
 
@@ -152,6 +153,10 @@ void SensorLinkMachine::measurement(const HeartRateMeasurement &m, int64_t nowNs
 		// Ignore the packet; it neither refreshes nor hides. Freshness timeout applies.
 		snap_.malformedPackets++;
 		return;
+	case ParseStatus::NoHeartRate:
+		// Fitness machine without a heart-rate source right now: nothing to show; the
+		// freshness timeout hides any previous value.
+		return;
 	case ParseStatus::InvalidValue:
 		invalidate();
 		snap_.state = SensorState::Live;
@@ -167,7 +172,12 @@ void SensorLinkMachine::measurement(const HeartRateMeasurement &m, int64_t nowNs
 		return;
 	}
 
+	// The first reading of a connection is not trusted on its own: some devices replay
+	// their last stored value when an app subscribes, even when they are no longer
+	// measuring. Only a second reading in the same connection proves live streaming.
 	snap_.state = SensorState::Live;
+	if (++snap_.validInConnection < kReadingsToConfirm)
+		return;
 	snap_.hasMeasurement = true;
 	snap_.contactLost = false;
 	snap_.bpm = m.bpm;
@@ -189,11 +199,11 @@ void SensorLinkMachine::unsupported(const std::string &detail)
 	snap_.detail = detail;
 }
 
-void SensorLinkMachine::bluetoothOff()
+void SensorLinkMachine::bluetoothOff(const std::string &detail)
 {
 	invalidate();
 	snap_.state = SensorState::BluetoothOff;
-	snap_.detail.clear();
+	snap_.detail = detail;
 }
 
 void SensorLinkMachine::error(const std::string &detail)

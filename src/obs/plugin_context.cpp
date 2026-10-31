@@ -70,7 +70,9 @@ void initialize()
 	auto mgr = BleManager::create(std::move(backend));
 	mgr->setConnectedCallback([](const std::string &key, const std::string &name, const std::string &winId) {
 		registry().noteConnected(key, unixTimeSeconds(), name, winId);
-		obs_log(LOG_INFO, "sensor %s connected (%s)", key.c_str(), name.c_str());
+	});
+	mgr->setEventLog([](const std::string &key, const std::string &message) {
+		obs_log(LOG_INFO, "sensor %s: %s", key.c_str(), message.c_str());
 	});
 	{
 		std::lock_guard<std::mutex> lock(g_mutex);

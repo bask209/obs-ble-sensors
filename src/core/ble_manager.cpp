@@ -16,6 +16,42 @@ int64_t unixTimeSeconds()
 		.count();
 }
 
+const char *adapterStateText(AdapterState state)
+{
+	switch (state) {
+	case AdapterState::Ready:
+		return "ready";
+	case AdapterState::Off:
+		return "Bluetooth is turned off in Windows";
+	case AdapterState::NoAdapter:
+		return "no Bluetooth adapter found";
+	case AdapterState::NoLowEnergy:
+		return "this PC's Bluetooth adapter does not support Bluetooth LE (4.0+)";
+	}
+	return "unknown";
+}
+
+static const char *connectStatusName(ConnectStatus status)
+{
+	switch (status) {
+	case ConnectStatus::Connected:
+		return "connected";
+	case ConnectStatus::NotFound:
+		return "not found";
+	case ConnectStatus::Unsupported:
+		return "not a supported heart-rate device";
+	case ConnectStatus::AccessDenied:
+		return "access denied";
+	case ConnectStatus::BluetoothOff:
+		return "Bluetooth unavailable";
+	case ConnectStatus::Cancelled:
+		return "cancelled";
+	case ConnectStatus::Failed:
+		return "failed";
+	}
+	return "unknown";
+}
+
 // Lock order: BleManager::mutex_ -> Link::m -> nothing.
 // SessionSink's internal mutex -> Link::m (from backend callbacks); so the worker never
 // holds Link::m while calling SessionSink::detach().
@@ -34,6 +70,7 @@ struct BleManager::Link {
 	bool lost = false;
 	bool waiting = false; // Waiting between attempts (not connected).
 	int64_t lastAdvertWakeNs = 0;
+	std::string lastLog; // Worker thread only: suppresses repeated identical log lines.
 
 	CancelToken cancel;
 	std::thread thread;
@@ -169,6 +206,14 @@ void BleManager::shutdown()
 	for (auto &link : all)
 		if (link->thread.joinable())
 			link->thread.join();
+	std::vector<Helper> helpers;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		helpers.swap(helpers_);
+	}
+	for (auto &h : helpers)
+		if (h.thread.joinable())
+			h.thread.join();
 }
 
 std::unique_ptr<BleManager::Subscription> BleManager::subscribe(const DeviceIdentity &identity, bool autoReconnect)
@@ -293,6 +338,69 @@ void BleManager::setConnectedCallback(ConnectedFn fn)
 	connected_ = std::move(fn);
 }
 
+void BleManager::setEventLog(EventLogFn fn)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	eventLog_ = std::move(fn);
+}
+
+void BleManager::logEvent(Link &link, const std::string &message)
+{
+	if (message == link.lastLog)
+		return;
+	link.lastLog = message;
+	EventLogFn fn;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		fn = eventLog_;
+	}
+	if (fn)
+		fn(link.key, message);
+}
+
+void BleManager::requestPairedDevices()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (stopping_)
+		return;
+	// Reap finished queries (non-blocking: `done` is set as the last action).
+	for (auto it = helpers_.begin(); it != helpers_.end();) {
+		if (it->done->load()) {
+			it->thread.join();
+			it = helpers_.erase(it);
+		} else {
+			++it;
+		}
+	}
+	if (!helpers_.empty())
+		return; // One query at a time.
+	auto done = std::make_shared<std::atomic<bool>>(false);
+	Helper helper;
+	helper.done = done;
+	helper.thread = std::thread([this, done] {
+		struct Done {
+			std::shared_ptr<std::atomic<bool>> flag;
+			~Done() { flag->store(true); }
+		} markDone{done};
+		backend_->threadBegin();
+		std::vector<Advertisement> devices = backend_->pairedDevices();
+		backend_->threadEnd();
+		std::vector<std::shared_ptr<ScanSlot>> slots;
+		{
+			std::lock_guard<std::mutex> l(mutex_);
+			if (stopping_)
+				return;
+			slots = scanSlots_;
+		}
+		for (auto &adv : devices) {
+			adv.paired = true;
+			for (auto &slot : slots)
+				slot->deliver(adv);
+		}
+	});
+	helpers_.push_back(std::move(helper));
+}
+
 size_t BleManager::activeLinkCount() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -389,6 +497,8 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 
 	Backoff backoff(config_.backoffInitial, config_.backoffMax, 0.2,
 			config_.backoffSeed ? config_.backoffSeed : std::random_device{}());
+	Backoff silentBackoff(config_.silentBackoffInitial, config_.silentBackoffMax, 0.2,
+			      config_.backoffSeed ? config_.backoffSeed + 1 : std::random_device{}());
 	const int64_t silenceNs = std::chrono::duration_cast<std::chrono::nanoseconds>(config_.silenceReconnect).count();
 
 	for (;;) {
@@ -405,18 +515,22 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 		std::chrono::milliseconds delay{0};
 		bool parked = false;
 
-		if (!backend_->bluetoothAvailable()) {
-			std::lock_guard<std::mutex> lock(link->m);
-			link->machine.bluetoothOff();
+		const AdapterState adapter = backend_->adapterState();
+		if (adapter != AdapterState::Ready) {
+			{
+				std::lock_guard<std::mutex> lock(link->m);
+				link->machine.bluetoothOff(adapterStateText(adapter));
+			}
+			logEvent(*link, std::string("Bluetooth not ready: ") + adapterStateText(adapter));
 			delay = backoff.next();
 		} else {
 			std::weak_ptr<Link> weak = link;
 			auto sink = std::make_shared<SessionSink>(
-				[weak](const uint8_t *data, size_t size) {
+				[weak](MeasurementKind kind, const uint8_t *data, size_t size) {
 					auto l = weak.lock();
 					if (!l)
 						return;
-					const HeartRateMeasurement m = parseHeartRateMeasurement(data, size);
+					const HeartRateMeasurement m = parseMeasurement(kind, data, size);
 					std::lock_guard<std::mutex> lock(l->m);
 					if (!l->lost)
 						l->machine.measurement(m, monotonicNs());
@@ -468,6 +582,7 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 				}
 				if (connected)
 					connected(link->key, result.deviceName, result.windowsDeviceId);
+				logEvent(*link, std::string("connected to ") + result.deviceName + " (" + measurementKindName(result.kind) + ")");
 				updateScanDemand();
 
 				std::string reason;
@@ -489,23 +604,38 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 					}
 					validAtEnd = link->machine.snapshot().validPackets;
 				}
-				// Only a session that delivered real heart-rate data resets the backoff, so a
-				// sensor that connects but never sends data is not reconnected aggressively.
-				if (validAtEnd != validAtStart)
+				// Only a session that delivered confirmed heart-rate data resets the backoff. A
+				// device that connects but stays silent (e.g. a watch with broadcasting turned
+				// off) is retried progressively less often, up to every 2 minutes, to spare its
+				// battery and the radio.
+				const bool deliveredData = validAtEnd != validAtStart;
+				if (deliveredData) {
 					backoff.reset();
+					silentBackoff.reset();
+				}
 
 				sink->detach();          // No callbacks after this point...
 				result.session.reset(); // ...so tearing down the OS objects is safe.
 
+				std::string why;
 				{
 					std::lock_guard<std::mutex> lock(link->m);
 					if (!link->lost)
 						link->machine.disconnected(reason);
+					why = link->machine.snapshot().detail;
 				}
-				delay = backoff.next();
+				if (!link->stop)
+					logEvent(*link, "disconnected" + (why.empty() ? std::string() : " (" + why + ")"));
+				delay = deliveredData ? backoff.next() : silentBackoff.next();
 			} else {
 				sink->detach();
 				result.session.reset();
+				if (result.status == ConnectStatus::NotFound && link->identity.isResolvablePrivate())
+					result.detail = "this device changes its Bluetooth address for privacy; pair it in Windows "
+							"Bluetooth settings, then select it again, so it can always be found";
+				if (result.status != ConnectStatus::Cancelled)
+					logEvent(*link, std::string(connectStatusName(result.status)) +
+								(result.detail.empty() ? "" : ": " + result.detail));
 				std::lock_guard<std::mutex> lock(link->m);
 				switch (result.status) {
 				case ConnectStatus::NotFound:
@@ -572,6 +702,13 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 		link->waiting = false;
 		link->machine.stopped();
 	}
+	bool managerStopping = false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		managerStopping = stopping_;
+	}
+	if (!managerStopping)
+		logEvent(*link, "connection closed (no visible source uses this sensor)");
 	backend_->threadEnd();
 	link->finished.store(true);
 }

@@ -16,6 +16,7 @@ add_executable(
   test_parser.cpp
   test_state.cpp
   test_manager.cpp
+  test_security.cpp
   ${CORE_DIR}/heart_rate_parser.cpp
   ${CORE_DIR}/sensor_state.cpp
   ${CORE_DIR}/display_format.cpp
