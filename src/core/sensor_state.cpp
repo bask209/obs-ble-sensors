@@ -172,6 +172,7 @@ void SensorLinkMachine::measurement(const HeartRateMeasurement &m, int64_t nowNs
 	snap_.contactLost = false;
 	snap_.bpm = m.bpm;
 	snap_.lastValidNs = nowNs;
+	snap_.validPackets++;
 }
 
 void SensorLinkMachine::disconnected(const std::string &detail)

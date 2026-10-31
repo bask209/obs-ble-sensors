@@ -36,6 +36,7 @@ struct SensorSnapshot {
 	bool contactLost = false;
 	uint64_t connectionGeneration = 0; // Increments for every new connection.
 	uint64_t malformedPackets = 0;
+	uint64_t validPackets = 0; // Lifetime count of displayable measurements.
 	std::string detail; // Short troubleshooting text for the settings UI only.
 };
 

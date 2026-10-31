@@ -196,6 +196,52 @@ TEST(manager_unsupported_device)
 	CHECK(eventually([&] { return sub->snapshot().state == SensorState::Unsupported; }));
 	CHECK(Fixture::hidden(*sub));
 	CHECK(friendlyStatus(sub->snapshot(), monotonicNs(), kTimeout).find("does not provide") != std::string::npos);
+	// Safety: a non-heart-rate device is left alone, never reconnected automatically
+	// (backoff max is 200 ms in tests, so retries would show up quickly).
+	std::this_thread::sleep_for(ms(700));
+	CHECK_EQ(f.mock->connectAttempts(kWatch), 1);
+	CHECK(!f.manager->scanWanted());
+	// Only an explicit user request tries again.
+	sub->reconnectNow();
+	CHECK(eventually([&] { return f.mock->connectAttempts(kWatch) == 2; }));
+}
+
+TEST(manager_no_background_scan_by_default)
+{
+	Fixture f;
+	f.mock->setPresent(kPolar, false);
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	CHECK(eventually([&] { return f.mock->connectAttempts(kPolar) >= 3; }));
+	CHECK(!f.mock->scanning()); // periodic retries only; no radio listening in between
+}
+
+TEST(manager_background_scan_ignores_unrelated_devices)
+{
+	ManagerConfig cfg = Fixture::fastConfig();
+	cfg.backgroundScan = true;
+	Fixture f(cfg);
+	f.mock->setPresent(kPolar, false);
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	CHECK(eventually([&] { return f.mock->scanning(); }));
+	CHECK(!f.mock->scanningActive()); // passive: never transmits scan requests
+	f.mock->advertise(kWahoo);        // someone else's device
+	f.mock->advertise(kWatch);
+	CHECK_EQ(f.mock->filteredAdvertisements(), 2);
+}
+
+TEST(manager_silent_sensor_backs_off)
+{
+	ManagerConfig cfg = Fixture::fastConfig();
+	cfg.backoffInitial = ms(300);
+	cfg.backoffMax = ms(5000);
+	cfg.silenceReconnect = ms(100);
+	Fixture f(cfg);
+	auto sub = f.manager->subscribe(ident(kPolar), true);
+	std::this_thread::sleep_for(ms(2000));
+	// Connected but never sends data: ~0 s, ~0.45 s, ~1.15 s, then >2 s. Without growing
+	// backoff it would be about 5 connections.
+	CHECK(f.mock->successfulConnections(kPolar) <= 3);
+	CHECK(f.mock->successfulConnections(kPolar) >= 2);
 }
 
 TEST(manager_shared_connection_for_two_sources)
@@ -276,6 +322,7 @@ TEST(manager_auto_reconnect_disabled_waits_for_request)
 TEST(manager_advertisement_wakes_reconnect_early)
 {
 	ManagerConfig cfg = Fixture::fastConfig();
+	cfg.backgroundScan = true;
 	cfg.backoffInitial = ms(5000);
 	cfg.backoffMax = ms(5000);
 	Fixture f(cfg);

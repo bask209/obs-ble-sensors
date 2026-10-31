@@ -22,12 +22,16 @@ namespace blehr {
 
 struct ManagerConfig {
 	std::chrono::milliseconds backoffInitial{1000};
-	std::chrono::milliseconds backoffMax{30000};
+	std::chrono::milliseconds backoffMax{15000};
 	// Reconnect when a connection delivers no notification at all for this long.
 	std::chrono::milliseconds silenceReconnect{20000};
 	// Minimum spacing between advertisement-triggered early reconnect attempts.
 	std::chrono::milliseconds advertWakeMinInterval{2000};
 	uint32_t backoffSeed = 0; // 0 = random
+	// Passive scan while a sensor is missing, to reconnect as soon as it advertises.
+	// Windows delivers every nearby advertisement to the process, so this is opt-in.
+	bool backgroundScan = false; // Off by default: costs ~10x more CPU than periodic retries.
+
 };
 
 class BleManager : public std::enable_shared_from_this<BleManager> {
@@ -118,7 +122,7 @@ private:
 
 	std::mutex scanMutex_; // Serializes backend scan start/stop. Order: scanMutex_ -> mutex_.
 	bool scanning_ = false;
-	bool scanActive_ = false;
+	BleBackend::ScanParams scanParams_;
 };
 
 } // namespace blehr

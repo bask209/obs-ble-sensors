@@ -128,8 +128,13 @@ public:
 
 		// While invisible the child holds a wide sample text purely so the source keeps
 		// a stable size; it is never drawn.
-		const std::string desired = live ? formatBpm(style, bpm) : layoutSample(style);
-		if (desired != requestedText_) {
+		// Only build a string when what should be shown changed (no per-frame allocation).
+		const int64_t textKey = live ? (int64_t(style) << 16 | bpm) : -1 - int64_t(style);
+		if (!requestedText_.empty() && textKey == requestedKey_) {
+			// Unchanged.
+		} else if (const std::string desired = live ? formatBpm(style, bpm) : layoutSample(style);
+			   desired != requestedText_) {
+			requestedKey_ = textKey;
 			if (!live || !requestedLive_)
 				appliedLive_ = false;
 			setChildText(desired);
@@ -295,6 +300,7 @@ private:
 	uint64_t remeasureTick_ = 0;
 	std::string styleSignature_; // Touched by create (UI) then update (graphics), never concurrently.
 	std::string requestedText_;
+	int64_t requestedKey_ = 0;
 	bool requestedLive_ = false;
 	bool appliedLive_ = false;
 };

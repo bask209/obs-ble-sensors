@@ -17,6 +17,7 @@
 #include <winrt/Windows.Devices.Radios.h>
 #include <winrt/Windows.Storage.Streams.h>
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <vector>
@@ -164,21 +165,29 @@ public:
 		threadInitialized() = false;
 	}
 
-	bool startScan(bool active, AdvertisementFn onAdvertisement) override
+	bool startScan(const ScanParams &params, AdvertisementFn onAdvertisement) override
 	{
 		std::lock_guard<std::mutex> lock(scanMutex_);
 		stopScanLocked();
 		try {
 			auto gate = std::make_shared<ScanGate>(std::move(onAdvertisement));
 			adv::BluetoothLEAdvertisementWatcher watcher;
-			watcher.ScanningMode(active ? adv::BluetoothLEScanningMode::Active
-						    : adv::BluetoothLEScanningMode::Passive);
+			// Passive unless the user is looking at the scan dialog: passive scanning only
+			// listens and never transmits scan requests to other people's devices.
+			watcher.ScanningMode(params.active ? adv::BluetoothLEScanningMode::Active
+							   : adv::BluetoothLEScanningMode::Passive);
 
-			receivedToken_ = watcher.Received([gate](const adv::BluetoothLEAdvertisementWatcher &,
-								 const adv::BluetoothLEAdvertisementReceivedEventArgs &args) {
+			const bool all = params.allDevices;
+			const std::vector<uint64_t> wanted = params.addresses; // sorted
+			receivedToken_ = watcher.Received([gate, all, wanted](const adv::BluetoothLEAdvertisementWatcher &,
+									     const adv::BluetoothLEAdvertisementReceivedEventArgs &args) {
 				try {
+					const uint64_t address = args.BluetoothAddress();
+					// Cheapest possible rejection of unrelated devices (no string/UUID work).
+					if (!all && !std::binary_search(wanted.begin(), wanted.end(), address))
+						return;
 					Advertisement a;
-					a.identity.address = args.BluetoothAddress();
+					a.identity.address = address;
 					a.identity.addressType = args.BluetoothAddressType() == wdb::BluetoothAddressType::Random
 									 ? AddressType::Random
 									 : AddressType::Public;

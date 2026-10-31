@@ -17,7 +17,10 @@ using namespace blehr;
 
 int main(int argc, char **argv)
 {
-	auto manager = BleManager::create(createWinRtBackend());
+	ManagerConfig cfg;
+	if (argc > 3 && std::string(argv[3]) == "--noscan")
+		cfg.backgroundScan = false;
+	auto manager = BleManager::create(createWinRtBackend(), cfg);
 
 	if (argc < 2) {
 		std::mutex m;

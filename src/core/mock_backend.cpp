@@ -91,8 +91,14 @@ void MockBackend::advertise(uint64_t address)
 		adv.rssi = -60;
 	}
 	std::lock_guard<std::mutex> lock(scanMutex_);
-	if (scanning_ && scanFn_)
-		scanFn_(adv);
+	if (!scanning_ || !scanFn_)
+		return;
+	if (!scanParams_.allDevices &&
+	    !std::binary_search(scanParams_.addresses.begin(), scanParams_.addresses.end(), adv.identity.address)) {
+		filteredAdvertisements_++;
+		return;
+	}
+	scanFn_(adv);
 }
 
 int MockBackend::connectAttempts(uint64_t address) const
@@ -125,10 +131,16 @@ bool MockBackend::scanning() const
 bool MockBackend::scanningActive() const
 {
 	std::lock_guard<std::mutex> lock(scanMutex_);
-	return scanning_ && scanActive_;
+	return scanning_ && scanParams_.active;
 }
 
-bool MockBackend::startScan(bool active, AdvertisementFn onAdvertisement)
+int MockBackend::filteredAdvertisements() const
+{
+	std::lock_guard<std::mutex> lock(scanMutex_);
+	return filteredAdvertisements_;
+}
+
+bool MockBackend::startScan(const ScanParams &params, AdvertisementFn onAdvertisement)
 {
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -138,7 +150,7 @@ bool MockBackend::startScan(bool active, AdvertisementFn onAdvertisement)
 	std::lock_guard<std::mutex> lock(scanMutex_);
 	scanFn_ = std::move(onAdvertisement);
 	scanning_ = true;
-	scanActive_ = active;
+	scanParams_ = params;
 	return true;
 }
 

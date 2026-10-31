@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace blehr {
 
@@ -117,9 +118,21 @@ public:
 	virtual void threadBegin() {}
 	virtual void threadEnd() {}
 
-	// Non-blocking. Restarts the watcher if needed. `active` requests scan responses
-	// (device names). The callback may run on any thread until stopScan() returns.
-	virtual bool startScan(bool active, AdvertisementFn onAdvertisement) = 0;
+	// Non-blocking. (Re)starts the watcher. `params.active` requests scan responses
+	// (device names; only while the user has the scan dialog open). When
+	// `params.allDevices` is false, advertisements from addresses outside
+	// `params.addresses` must be dropped as early and cheaply as possible.
+	// The callback may run on any thread until stopScan() returns.
+	struct ScanParams {
+		bool active = false;
+		bool allDevices = false;
+		std::vector<uint64_t> addresses; // sorted
+		bool operator==(const ScanParams &o) const
+		{
+			return active == o.active && allDevices == o.allDevices && addresses == o.addresses;
+		}
+	};
+	virtual bool startScan(const ScanParams &params, AdvertisementFn onAdvertisement) = 0;
 	virtual void stopScan() = 0;
 	virtual bool scanHealthy() = 0; // False if the OS stopped the watcher (e.g. radio off).
 

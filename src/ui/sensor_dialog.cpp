@@ -356,6 +356,18 @@ void SensorDialog::onUse()
 	const std::string key = selectedKey();
 	if (key.empty())
 		return;
+	auto near = nearby_.find(key);
+	if (!selectedIsSaved() && near != nearby_.end() && !near->second.adv.advertisesHeartRate) {
+		const auto answer = QMessageBox::question(
+			this, QStringLiteral("Not a heart-rate sensor?"),
+			QStringLiteral("This device does not announce a heart-rate service, so it is probably not a "
+				       "heart-rate sensor.\n\nIf you continue, OBS connects to it once only to check. "
+				       "Nothing on the device is changed. If it has no heart-rate service it is left "
+				       "alone and the source stays invisible.\n\nContinue?"),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+		if (answer != QMessageBox::Yes)
+			return;
+	}
 	if (!selectedIsSaved() && !saveWithAlias(key))
 		return;
 	chosen_ = key;

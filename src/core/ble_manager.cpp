@@ -308,6 +308,8 @@ bool BleManager::scanWanted() const
 		return true;
 	for (const auto &kv : links_) {
 		std::lock_guard<std::mutex> linkLock(kv.second->m);
+		if (!config_.backgroundScan)
+			break;
 		if (kv.second->waiting && kv.second->machine.snapshot().state != SensorState::Unsupported)
 			return true;
 	}
@@ -319,19 +321,23 @@ void BleManager::updateScanDemand()
 	// Hold scanMutex_ across the decision so a late call from a worker can never restart
 	// scanning after shutdown() stopped it. Lock order: scanMutex_ -> mutex_.
 	std::lock_guard<std::mutex> scanLock(scanMutex_);
-	bool active = false;
+	BleBackend::ScanParams params;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		active = !scanSlots_.empty() && !stopping_;
+		// Dialog open: active scan of everything (names, discovery). Otherwise a passive
+		// scan that only cares about sensors waiting to reconnect; every other device's
+		// advertisement is discarded by the backend before any parsing.
+		params.active = params.allDevices = !scanSlots_.empty() && !stopping_;
+		for (const auto &kv : links_)
+			params.addresses.push_back(kv.second->identity.address);
 	}
-	// Scan when the dialog listens (active, for names) or when a link waits to reconnect
-	// (passive, only used to wake the link early when its sensor advertises).
+	std::sort(params.addresses.begin(), params.addresses.end());
 	const bool want = scanWanted();
 
 	if (want) {
-		if (!scanning_ || scanActive_ != active || !backend_->scanHealthy()) {
-			scanning_ = backend_->startScan(active, [this](const Advertisement &adv) { onAdvertisement(adv); });
-			scanActive_ = active;
+		if (!scanning_ || !(scanParams_ == params) || !backend_->scanHealthy()) {
+			scanning_ = backend_->startScan(params, [this](const Advertisement &adv) { onAdvertisement(adv); });
+			scanParams_ = params;
 		}
 	} else if (scanning_) {
 		backend_->stopScan();
@@ -397,6 +403,7 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 		}
 
 		std::chrono::milliseconds delay{0};
+		bool parked = false;
 
 		if (!backend_->bluetoothAvailable()) {
 			std::lock_guard<std::mutex> lock(link->m);
@@ -462,19 +469,30 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 				if (connected)
 					connected(link->key, result.deviceName, result.windowsDeviceId);
 				updateScanDemand();
-				backoff.reset();
 
 				std::string reason;
+				uint64_t validAtStart = 0;
+				uint64_t validAtEnd = 0;
 				{
 					std::unique_lock<std::mutex> lock(link->m);
+					validAtStart = link->machine.snapshot().validPackets;
+					// Event driven: sleeps until a disconnect/stop is signalled or the silence
+					// deadline passes (no periodic wake-ups while data flows).
 					while (!link->stop && !link->lost) {
-						if (monotonicNs() - link->machine.snapshot().lastPacketNs >= silenceNs) {
+						const int64_t deadlineNs = link->machine.snapshot().lastPacketNs + silenceNs;
+						if (monotonicNs() >= deadlineNs) {
 							reason = "no data received";
 							break;
 						}
-						link->cv.wait_for(lock, std::chrono::milliseconds(250));
+						link->cv.wait_until(lock, std::chrono::steady_clock::time_point(
+										  std::chrono::nanoseconds(deadlineNs)));
 					}
+					validAtEnd = link->machine.snapshot().validPackets;
 				}
+				// Only a session that delivered real heart-rate data resets the backoff, so a
+				// sensor that connects but never sends data is not reconnected aggressively.
+				if (validAtEnd != validAtStart)
+					backoff.reset();
 
 				sink->detach();          // No callbacks after this point...
 				result.session.reset(); // ...so tearing down the OS objects is safe.
@@ -484,7 +502,7 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 					if (!link->lost)
 						link->machine.disconnected(reason);
 				}
-				delay = backoff.next(); // ~initial delay after a real connection.
+				delay = backoff.next();
 			} else {
 				sink->detach();
 				result.session.reset();
@@ -495,8 +513,10 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 					delay = backoff.next();
 					break;
 				case ConnectStatus::Unsupported:
+					// The device answered and has no heart-rate service: leave it alone.
+					// No further connections until the user asks (Reconnect now / reselect).
 					link->machine.unsupported(result.detail);
-					delay = backoff.maximum();
+					parked = true;
 					break;
 				case ConnectStatus::AccessDenied:
 					link->machine.error(result.detail.empty()
@@ -531,14 +551,16 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 			std::unique_lock<std::mutex> lock(link->m);
 			const auto deadline = std::chrono::steady_clock::now() + delay;
 			while (!link->stop && !link->reconnectRequested && !link->wake) {
-				if (link->autoVotes > 0) {
+				if (link->autoVotes > 0 && !parked) {
 					if (link->cv.wait_until(lock, deadline) == std::cv_status::timeout)
 						break;
 				} else {
-					// Automatic reconnect disabled by every source: wait for an explicit request.
+					// Automatic reconnect disabled by every source, or the device is not a
+					// heart-rate sensor: wait for an explicit request.
 					link->cv.wait(lock);
 				}
 			}
+			parked = false;
 			link->waiting = false;
 			if (link->reconnectRequested || link->wake)
 				backoff.reset();

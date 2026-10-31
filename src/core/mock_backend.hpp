@@ -39,9 +39,10 @@ public:
 	int liveSessions(uint64_t address) const;
 	bool scanning() const;
 	bool scanningActive() const;
+	int filteredAdvertisements() const;
 
 	// --- BleBackend ---
-	bool startScan(bool active, AdvertisementFn onAdvertisement) override;
+	bool startScan(const ScanParams &params, AdvertisementFn onAdvertisement) override;
 	void stopScan() override;
 	bool scanHealthy() override;
 	bool bluetoothAvailable() override;
@@ -68,7 +69,8 @@ private:
 	mutable std::mutex scanMutex_; // Held while delivering advertisements; stopScan waits on it.
 	AdvertisementFn scanFn_;
 	bool scanning_ = false;
-	bool scanActive_ = false;
+	ScanParams scanParams_;
+	int filteredAdvertisements_ = 0;
 };
 
 } // namespace blehr
