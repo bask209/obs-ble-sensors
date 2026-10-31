@@ -28,7 +28,7 @@ struct Fixture {
 	MockBackend *mock = nullptr;
 	std::shared_ptr<BleManager> manager;
 
-	explicit Fixture(ManagerConfig cfg = fastConfig())
+	explicit Fixture(const ManagerConfig &cfg = fastConfig())
 	{
 		auto backend = std::make_unique<MockBackend>();
 		mock = backend.get();

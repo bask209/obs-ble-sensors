@@ -264,8 +264,8 @@ Windows Bluetooth stack and OBS compositing a small texture, which no plugin can
 | Angle | What was done | Result |
 | --- | --- | --- |
 | Static analysis (whole plugin, incl. OBS/Qt/WinRT code) | MSVC `/analyze` code analysis on every source file | One finding (ambiguous error-code comparison) fixed; **clean** |
-| Semantic code scanning | **CodeQL** (security-and-quality queries) on the full plugin build, on every push and weekly | Runs in CI; results go to the repository's Security tab |
-| Coverage-guided fuzzing | **libFuzzer** with ASan and UBSan exploring all 7 measurement formats, the state machine, the packed render word, the name sanitizer and the key parser, with invariant checks | Runs 3 minutes on every CI build |
+| Semantic code scanning | **CodeQL** (security-and-quality queries) on the full plugin build, on every push and weekly | **0 warnings or errors in this project's code**; the low-severity notes (pass-by-value, exact float compare) were cleaned up |
+| Coverage-guided fuzzing | **libFuzzer** with ASan and UBSan exploring all 7 measurement formats, the state machine, the packed render word, the name sanitizer and the key parser, with invariant checks | **22.5 million inputs in 3 minutes, 0 crashes** (and on every CI build) |
 | Long-running leak check (real Bluetooth stack) | 4-minute soak of continuous real connection attempts, sampled every 30 s | Handles flat (166-170), private memory flat (2.0-2.1 MB), threads flat (6); CPU ≈0.08 % of one core |
 | Untrusted config file | `devices.json` larger than 1 MB is ignored; at most 100 sensors; aliases and names sanitized on load, save and rename | Unit test with a hostile 500-entry file |
 | OBS integration | The sensor dialog no longer touches the properties object after it closes (OBS may have replaced it) | Removes a theoretical use-after-free |

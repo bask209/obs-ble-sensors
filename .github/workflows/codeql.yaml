@@ -27,6 +27,7 @@ jobs:
           languages: c-cpp
           build-mode: manual
           queries: security-and-quality
+          config-file: ./.github/codeql/codeql-config.yml
       - name: Build plugin and tests
         shell: pwsh
         run: |

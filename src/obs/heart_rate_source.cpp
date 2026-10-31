@@ -102,7 +102,7 @@ struct GlyphLayer {
 	gs_texrender_t *halo = nullptr; // Baked contrast ring for `mask`.
 	uint64_t maskSerial = 0;     // Bumped on every capture.
 	std::string haloFor;
-	float haloRadius = -1.0f;
+	int haloRadius = -1; // Halo size (whole pixels) the halo texture was baked for.
 	uint64_t haloMaskSerial = 0;
 	uint32_t haloCx = 0, haloCy = 0;
 	std::string requested;      // Text last sent to the child.
@@ -455,7 +455,8 @@ private:
 		if (!maskTex || !layer.halo || layer.captured.empty())
 			return false;
 		const float r = look_.haloSize;
-		if (layer.haloFor == layer.captured && layer.haloRadius == r && layer.haloMaskSerial == layer.maskSerial)
+		const int rKey = int(r); // haloSize is a whole number of pixels (integer setting).
+		if (layer.haloFor == layer.captured && layer.haloRadius == rKey && layer.haloMaskSerial == layer.maskSerial)
 			return true;
 		const uint32_t w = uint32_t(std::ceil(float(layer.cx) + 2.0f * r));
 		const uint32_t h = uint32_t(std::ceil(float(layer.cy) + 2.0f * r));
@@ -485,7 +486,7 @@ private:
 		if (!ok)
 			return false;
 		layer.haloFor = layer.captured;
-		layer.haloRadius = r;
+		layer.haloRadius = rKey;
 		layer.haloMaskSerial = layer.maskSerial;
 		layer.haloCx = w;
 		layer.haloCy = h;

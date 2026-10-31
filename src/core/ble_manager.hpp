@@ -87,7 +87,7 @@ public:
 		std::shared_ptr<ScanSlot> slot_;
 	};
 
-	static std::shared_ptr<BleManager> create(std::unique_ptr<BleBackend> backend, ManagerConfig config = {});
+	static std::shared_ptr<BleManager> create(std::unique_ptr<BleBackend> backend, const ManagerConfig &config = {});
 	~BleManager();
 
 	// Stops every worker and joins them. Safe to call more than once.
@@ -116,7 +116,7 @@ public:
 	bool scanWanted() const;
 
 private:
-	BleManager(std::unique_ptr<BleBackend> backend, ManagerConfig config);
+	BleManager(std::unique_ptr<BleBackend> backend, const ManagerConfig &config);
 
 	void release(const std::shared_ptr<Link> &link, bool autoReconnect);
 	void setAutoReconnectVote(const std::shared_ptr<Link> &link, bool from, bool to);

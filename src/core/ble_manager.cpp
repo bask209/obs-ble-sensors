@@ -176,12 +176,12 @@ BleManager::ScanToken::~ScanToken()
 // ---------------------------------------------------------------------------------------
 // BleManager
 
-std::shared_ptr<BleManager> BleManager::create(std::unique_ptr<BleBackend> backend, ManagerConfig config)
+std::shared_ptr<BleManager> BleManager::create(std::unique_ptr<BleBackend> backend, const ManagerConfig &config)
 {
 	return std::shared_ptr<BleManager>(new BleManager(std::move(backend), config));
 }
 
-BleManager::BleManager(std::unique_ptr<BleBackend> backend, ManagerConfig config)
+BleManager::BleManager(std::unique_ptr<BleBackend> backend, const ManagerConfig &config)
 	: backend_(std::move(backend)),
 	  config_(config)
 {

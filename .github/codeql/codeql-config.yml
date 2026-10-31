@@ -1,0 +1,5 @@
+# Analyze only this project's code; OBS and Qt sources compiled as dependencies are excluded.
+paths-ignore:
+  - .deps
+  - build_x64
+  - build_tests
