@@ -1,6 +1,7 @@
 #include "test_framework.hpp"
 
 #include "core/display_format.hpp"
+#include "core/heart_animation.hpp"
 #include "core/heart_rate_parser.hpp"
 #include "core/device_identity.hpp"
 
@@ -122,4 +123,43 @@ TEST(identity_keys_roundtrip)
 	CHECK(!identityFromKey("ble:public:00:00:00:00:00:00").has_value());
 	CHECK(!identityFromKey("ble:public:A0:9E:1A:12:34").has_value());
 	CHECK(!identityFromKey("ble:public:A0-9E-1A-12-34-56").has_value());
+}
+
+TEST(heart_animation_pulse_shape)
+{
+	CHECK(heartPulse(0.06) > 0.95f);                    // "lub" peak
+	CHECK(heartPulse(0.30) > 0.5f);                     // softer "dub"
+	CHECK(heartPulse(0.30) < heartPulse(0.06));
+	CHECK(heartPulse(0.6) < 0.01f);                     // resting
+	CHECK(heartPulse(0.95) < 0.05f);
+	for (int i = 0; i < 100; ++i) {
+		const float v = heartPulse(i / 100.0);
+		CHECK(v >= 0.0f && v <= 1.0f);
+	}
+}
+
+TEST(heart_animation_follows_bpm)
+{
+	HeartBeatAnimator a;
+	a.advance(0.5, 60); // half a beat at 60 BPM
+	CHECK(std::fabs(a.phase() - 0.5) < 1e-9);
+	a.advance(0.5, 120); // a full beat at 120 BPM wraps around
+	CHECK(std::fabs(a.phase() - 0.5) < 1e-9);
+	a.advance(1.0, 0); // no BPM: frozen
+	CHECK(std::fabs(a.phase() - 0.5) < 1e-9);
+	a.reset();
+	CHECK(a.phase() == 0.0);
+	a.advance(0.06, 60);
+	CHECK(a.scale(0.2f) > 1.18f && a.scale(0.2f) <= 1.2f);
+	CHECK(a.scale(0.0f) == 1.0f);
+}
+
+TEST(display_number_parts)
+{
+	CHECK(styleShowsHeart(DisplayStyle::HeartNumberUnit));
+	CHECK(styleShowsHeart(DisplayStyle::HeartNumber));
+	CHECK(!styleShowsHeart(DisplayStyle::NumberUnit));
+	CHECK_EQ(formatNumber(DisplayStyle::HeartNumberUnit, 82), std::string("82 BPM"));
+	CHECK_EQ(formatNumber(DisplayStyle::HeartNumber, 82), std::string("82"));
+	CHECK_EQ(numberLayoutSample(DisplayStyle::NumberUnit), std::string("888 BPM"));
 }

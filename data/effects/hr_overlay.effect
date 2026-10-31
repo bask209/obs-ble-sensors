@@ -1,0 +1,91 @@
+// OBS BLE Sensors overlay shader. Glyphs are pre-rendered into offscreen masks (only the
+// alpha channel is used), then drawn either tinted with a color (premultiplied) or as a
+// white mask that, combined with an INVDSTCOLOR/INVSRCCOLOR blend, inverts what is behind.
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float4 tint;
+uniform float2 mask_size;   // Mask size in pixels (halo pass).
+uniform float halo_radius;  // Halo radius in mask pixels (halo pass).
+
+sampler_state textureSampler {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertInOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertInOut VSDefault(VertInOut vert_in)
+{
+	VertInOut vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
+
+float4 PSTint(VertInOut vert_in) : TARGET
+{
+	float a = image.Sample(textureSampler, vert_in.uv).a * tint.a;
+	return float4(tint.rgb * a, a);
+}
+
+float4 PSInvertMask(VertInOut vert_in) : TARGET
+{
+	float a = image.Sample(textureSampler, vert_in.uv).a;
+	return float4(a, a, a, a);
+}
+
+float maskAt(float2 px)
+{
+	float2 uv = px / mask_size;
+	if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0)
+		return 0.0;
+	return image.Sample(textureSampler, uv).a;
+}
+
+// Contrast halo as a ring around the glyph, drawn on a quad enlarged by halo_radius on
+// every side. It is never drawn under the glyph itself, so an inverted number still
+// inverts the real background.
+float4 PSHalo(VertInOut vert_in) : TARGET
+{
+	float2 px = vert_in.uv * (mask_size + 2.0 * halo_radius) - halo_radius;
+	float m = 0.0;
+	for (int i = 0; i < 16; i++) {
+		float ang = 0.39269908 * float(i);
+		float2 dir = float2(cos(ang), sin(ang));
+		m = max(m, maskAt(px + dir * halo_radius));
+		m = max(m, maskAt(px + dir * halo_radius * 0.5));
+	}
+	float a = saturate(m - maskAt(px)) * tint.a;
+	return float4(tint.rgb * a, a);
+}
+
+technique Halo
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSHalo(vert_in);
+	}
+}
+
+technique Tint
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSTint(vert_in);
+	}
+}
+
+technique InvertMask
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSInvertMask(vert_in);
+	}
+}

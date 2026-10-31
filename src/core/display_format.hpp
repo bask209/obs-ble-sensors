@@ -23,3 +23,13 @@ std::string formatBpm(DisplayStyle style, uint16_t bpm);
 std::string layoutSample(DisplayStyle style);
 
 } // namespace blehr
+
+namespace blehr {
+
+// The renderer draws the heart as its own (animated) glyph; these give the parts.
+bool styleShowsHeart(DisplayStyle style);
+std::string formatNumber(DisplayStyle style, uint16_t bpm); // "82" or "82 BPM"
+std::string numberLayoutSample(DisplayStyle style);         // "888" or "888 BPM"
+extern const char *const kHeartGlyph;                        // U+2665, UTF-8
+
+} // namespace blehr

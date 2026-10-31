@@ -48,3 +48,29 @@ std::string layoutSample(DisplayStyle style)
 }
 
 } // namespace blehr
+
+namespace blehr {
+
+const char *const kHeartGlyph = "\xE2\x99\xA5";
+
+bool styleShowsHeart(DisplayStyle style)
+{
+	return style == DisplayStyle::HeartNumber || style == DisplayStyle::HeartNumberUnit;
+}
+
+static bool styleShowsUnit(DisplayStyle style)
+{
+	return style == DisplayStyle::NumberUnit || style == DisplayStyle::HeartNumberUnit;
+}
+
+std::string formatNumber(DisplayStyle style, uint16_t bpm)
+{
+	return std::to_string(bpm) + (styleShowsUnit(style) ? " BPM" : "");
+}
+
+std::string numberLayoutSample(DisplayStyle style)
+{
+	return std::string("888") + (styleShowsUnit(style) ? " BPM" : "");
+}
+
+} // namespace blehr

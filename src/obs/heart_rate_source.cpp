@@ -1,8 +1,15 @@
 // "BLE Heart Rate" OBS input source.
 //
-// Rendering: the visible text is drawn by a private OBS "Text (GDI+)" child source that
-// this source owns and renders inside its own video_render. The child is never added to
-// a scene. This source decides every frame whether to draw it at all:
+// Rendering: two private OBS "Text (GDI+)" child sources (never added to a scene) render
+// the heart glyph and the number. Each is captured into an offscreen mask only when its
+// text or style changes (about once per second at most), and the masks are drawn with a
+// small shader (data/effects/hr_overlay.effect):
+//   - contrast halo: a ring around (never under) each glyph, one shader pass,
+//     so the overlay stays readable on any background;
+//   - heart: tinted, scaled with a lub-dub pulse at the measured BPM;
+//   - number: either a fixed color, or "invert what's behind" (difference blend:
+//     out = mask * (1 - behind) + behind * (1 - mask)).
+// Every frame this source first decides whether to draw anything at all:
 //
 //   NO FRESH VALID HEART-RATE DATA = NOTHING RENDERED (fully transparent output)
 //
@@ -14,14 +21,18 @@
 #include "heart_rate_source.hpp"
 
 #include "core/display_format.hpp"
+#include "core/heart_animation.hpp"
 #include "obs/plugin_context.hpp"
 #include "ui/sensor_dialog.hpp"
 
+#include <graphics/vec2.h>
+#include <graphics/vec4.h>
 #include <obs-module.h>
 #include <plugin-support.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <mutex>
 #include <string>
 
@@ -40,10 +51,17 @@ constexpr const char *S_AUTO_RECONNECT = "auto_reconnect";
 constexpr const char *S_TIMEOUT = "stale_timeout";
 constexpr const char *S_STYLE = "display_style";
 constexpr const char *S_FONT = "font";
+constexpr const char *S_HEART_COLOR = "heart_color";
+constexpr const char *S_HEART_ANIMATE = "heart_animate";
+constexpr const char *S_HEART_BEAT = "heart_beat_strength";
+constexpr const char *S_NUMBER_MODE = "number_mode";
 constexpr const char *S_COLOR = "color";
-constexpr const char *S_OUTLINE = "outline";
-constexpr const char *S_OUTLINE_SIZE = "outline_size";
-constexpr const char *S_OUTLINE_COLOR = "outline_color";
+constexpr const char *S_HALO = "halo";
+constexpr const char *S_HALO_COLOR = "halo_color";
+constexpr const char *S_HALO_SIZE = "halo_size";
+constexpr const char *S_HALO_OPACITY = "halo_opacity";
+
+enum NumberMode : int { NumberInvert = 0, NumberFixedColor = 1 };
 
 constexpr int64_t kSecondNs = 1000000000LL;
 
@@ -52,11 +70,122 @@ const char *T(const char *key)
 	return obs_module_text(key);
 }
 
+vec4 colorFromSetting(obs_data_t *settings, const char *name, float opacity = 1.0f)
+{
+	vec4 v;
+	vec4_from_rgba_srgb(&v, uint32_t(obs_data_get_int(settings, name)) | 0xFF000000u);
+	v.w = opacity;
+	return v;
+}
+
+struct Look {
+	DisplayStyle style = kDefaultDisplayStyle;
+	bool heart = true;
+	bool animate = true;
+	float beat = 0.18f;
+	vec4 heartColor{};
+	bool invert = true;
+	vec4 numberColor{};
+	bool halo = true;
+	vec4 haloColor{};
+	float haloSize = 3.0f;
+};
+
+// One private text child plus the offscreen mask captured from it.
+struct GlyphLayer {
+	obs_source_t *child = nullptr;
+	gs_texrender_t *mask = nullptr;
+	std::string requested;      // Text last sent to the child.
+	bool requestedLive = false; // Whether that text is a real measurement.
+	uint64_t readyTick = 0;     // Child has applied `requested` from this tick on.
+	std::string captured;       // Text currently in `mask` ("" = nothing valid).
+	bool capturedLive = false;
+	uint32_t cx = 0, cy = 0; // Size of the captured mask.
+
+	void setText(const std::string &text, bool live, uint64_t tick)
+	{
+		obs_data_t *d = obs_data_create();
+		obs_data_set_string(d, "text", text.c_str());
+		obs_source_update(child, d);
+		obs_data_release(d);
+		requested = text;
+		requestedLive = live;
+		// libobs applies the child's update during its next video_tick; by our next
+		// tick it has certainly happened.
+		readyTick = tick + 1;
+		if (!live)
+			capturedLive = false;
+	}
+
+	void invalidate()
+	{
+		requested.clear();
+		captured.clear();
+		capturedLive = false;
+	}
+
+	// Graphics context. Re-captures only when the applied text differs from the mask.
+	bool ensureCaptured(uint64_t tick)
+	{
+		if (!child || !mask)
+			return false;
+		if (captured == requested && !captured.empty())
+			return true;
+		if (requested.empty() || tick < readyTick)
+			return !captured.empty(); // Child not updated yet: keep the previous mask.
+		const uint32_t w = obs_source_get_width(child);
+		const uint32_t h = obs_source_get_height(child);
+		if (!w || !h)
+			return false;
+		gs_texrender_reset(mask);
+		gs_blend_state_push();
+		gs_blend_function_separate(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA, GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+		bool ok = false;
+		if (gs_texrender_begin(mask, w, h)) {
+			vec4 clear;
+			vec4_zero(&clear);
+			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+			gs_ortho(0.0f, float(w), 0.0f, float(h), -100.0f, 100.0f);
+			obs_source_video_render(child);
+			gs_texrender_end(mask);
+			ok = true;
+		}
+		gs_blend_state_pop();
+		if (!ok)
+			return false;
+		captured = requested;
+		capturedLive = requestedLive;
+		cx = w;
+		cy = h;
+		return true;
+	}
+};
+
 class HeartRateSource {
 public:
 	HeartRateSource(obs_data_t *settings, obs_source_t *source) : self_(source)
 	{
-		createTextChild(settings);
+		heart_.child = createTextChild(settings, kHeartGlyph, "BLE Heart Rate Heart");
+		number_.child = createTextChild(settings, numberLayoutSample(displayStyleFromInt(obs_data_get_int(settings, S_STYLE))).c_str(),
+						"BLE Heart Rate Number");
+		char *path = obs_module_file("effects/hr_overlay.effect");
+		obs_enter_graphics();
+		heart_.mask = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		number_.mask = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		char *errors = nullptr;
+		effect_ = path ? gs_effect_create_from_file(path, &errors) : nullptr;
+		obs_leave_graphics();
+		if (!effect_)
+			obs_log(LOG_ERROR, "could not load overlay shader %s: %s", path ? path : "(missing)",
+				errors ? errors : "");
+		bfree(errors);
+		bfree(path);
+		if (effect_) {
+			paramImage_ = gs_effect_get_param_by_name(effect_, "image");
+			paramTint_ = gs_effect_get_param_by_name(effect_, "tint");
+			paramMaskSize_ = gs_effect_get_param_by_name(effect_, "mask_size");
+			paramHaloRadius_ = gs_effect_get_param_by_name(effect_, "halo_radius");
+		}
 		applySettings(settings);
 	}
 
@@ -66,8 +195,15 @@ public:
 			std::lock_guard<std::mutex> lock(subMutex_);
 			sub_.reset(); // Releases the shared BLE link without blocking.
 		}
-		if (text_)
-			obs_source_release(text_);
+		obs_enter_graphics();
+		gs_texrender_destroy(heart_.mask);
+		gs_texrender_destroy(number_.mask);
+		gs_effect_destroy(effect_);
+		obs_leave_graphics();
+		if (heart_.child)
+			obs_source_release(heart_.child);
+		if (number_.child)
+			obs_source_release(number_.child);
 	}
 
 	void applySettings(obs_data_t *settings)
@@ -76,7 +212,6 @@ public:
 		const bool autoReconnect = obs_data_get_bool(settings, S_AUTO_RECONNECT);
 		const int64_t timeout = std::clamp<int64_t>(obs_data_get_int(settings, S_TIMEOUT), 2, 15);
 		timeoutNs_.store(timeout * kSecondNs);
-		style_.store(int(displayStyleFromInt(obs_data_get_int(settings, S_STYLE))));
 
 		{
 			std::lock_guard<std::mutex> lock(subMutex_);
@@ -93,90 +228,121 @@ public:
 					if (identity && mgr)
 						sub_ = mgr->subscribe(*identity, autoReconnect);
 				}
-				deviceChanged_.store(true); // Never show text rendered for the old device.
+				deviceChanged_.store(true); // Never show a mask rendered for the old device.
 			} else if (sub_) {
 				sub_->setAutoReconnect(autoReconnect);
 			}
 		}
 
-		updateTextStyle(settings);
+		// Look: read on the graphics thread only (update is deferred there; create
+		// happens before any tick/render).
+		Look look;
+		look.style = displayStyleFromInt(obs_data_get_int(settings, S_STYLE));
+		look.heart = styleShowsHeart(look.style);
+		look.animate = obs_data_get_bool(settings, S_HEART_ANIMATE);
+		look.beat = float(std::clamp<int64_t>(obs_data_get_int(settings, S_HEART_BEAT), 0, 40)) / 100.0f;
+		look.heartColor = colorFromSetting(settings, S_HEART_COLOR);
+		look.invert = obs_data_get_int(settings, S_NUMBER_MODE) == NumberInvert;
+		look.numberColor = colorFromSetting(settings, S_COLOR);
+		look.halo = obs_data_get_bool(settings, S_HALO);
+		look.haloSize = float(std::clamp<int64_t>(obs_data_get_int(settings, S_HALO_SIZE), 1, 12));
+		look.haloColor = colorFromSetting(settings, S_HALO_COLOR,
+						  float(std::clamp<int64_t>(obs_data_get_int(settings, S_HALO_OPACITY), 0, 100)) /
+							  100.0f);
+		look_ = look;
+
+		updateFont(settings);
 	}
 
-	void tick()
+	void tick(float seconds)
 	{
-		if (!text_)
+		if (!number_.child)
 			return;
 		tickCount_++;
 
 		uint16_t bpm = 0;
 		uint64_t generation = 0;
 		const bool live = liveBpm(bpm, generation);
-		const DisplayStyle style = DisplayStyle(style_.load());
 
-		const bool styleChanged = styleChanged_.exchange(false);
-		if (deviceChanged_.exchange(false) || styleChanged) {
-			appliedLive_ = false;
-			requestedText_.clear();
+		const bool fontChanged = fontChanged_.exchange(false);
+		if (deviceChanged_.exchange(false) || fontChanged)
+			number_.invalidate();
+		if (fontChanged) {
+			heart_.invalidate();
+			remeasureTick_ = tickCount_ + 2; // Children apply the new font on their next tick.
 		}
-		if (styleChanged)
-			remeasureTick_ = tickCount_ + 2; // Child applies the new style on its next tick.
 		if (live && generation != shownGeneration_) {
-			appliedLive_ = false; // New connection: wait for text from this connection.
+			number_.invalidate(); // New connection: wait for text from this connection.
 			shownGeneration_ = generation;
-			requestedText_.clear();
 		}
 
-		// While invisible the child holds a wide sample text purely so the source keeps
-		// a stable size; it is never drawn.
-		// Only build a string when what should be shown changed (no per-frame allocation).
-		const int64_t textKey = live ? (int64_t(style) << 16 | bpm) : -1 - int64_t(style);
-		if (!requestedText_.empty() && textKey == requestedKey_) {
-			// Unchanged.
-		} else if (const std::string desired = live ? formatBpm(style, bpm) : layoutSample(style);
-			   desired != requestedText_) {
-			requestedKey_ = textKey;
-			if (!live || !requestedLive_)
-				appliedLive_ = false;
-			setChildText(desired);
-			requestedText_ = desired;
-			requestedLive_ = live;
-			// libobs applies the child's update during its next video_tick; by the next
-			// frame of ours it has certainly happened.
-			readyTick_ = tickCount_ + 1;
+		// Number: real value while live; otherwise a wide sample that is never drawn and
+		// only keeps the source's size stable for transforms.
+		const int64_t textKey = live ? (int64_t(look_.style) << 16 | bpm) : -1 - int64_t(look_.style);
+		if (number_.requested.empty() || textKey != numberKey_) {
+			numberKey_ = textKey;
+			const std::string text = live ? formatNumber(look_.style, bpm) : numberLayoutSample(look_.style);
+			if (text != number_.requested || live != number_.requestedLive)
+				number_.setText(text, live, tickCount_);
 		}
-		if (!live)
-			appliedLive_ = false;
-		else if (requestedLive_ && tickCount_ >= readyTick_)
-			appliedLive_ = true;
+		if (heart_.requested.empty())
+			heart_.setText(kHeartGlyph, true, tickCount_);
 
-		renderAllowed_.store(appliedLive_);
-		renderGeneration_.store(shownGeneration_);
+		if (live && look_.animate)
+			animator_.advance(seconds, bpm);
+		else
+			animator_.reset();
 
-		// Stable layout: never shrink while the style is unchanged.
-		if (remeasureTick_ && tickCount_ >= remeasureTick_) {
-			remeasureTick_ = 0;
-			width_.store(0);
-			height_.store(0);
-		}
-		const uint32_t w = obs_source_get_width(text_);
-		const uint32_t h = obs_source_get_height(text_);
-		if (w > width_.load())
-			width_.store(w);
-		if (h > height_.load())
-			height_.store(h);
+		updateLayout();
 	}
 
 	void render()
 	{
-		if (!text_ || !renderAllowed_.load())
+		if (!effect_)
 			return;
-		// Re-check freshness at draw time so a disconnect or timeout is honoured on the
-		// very next frame, independent of tick ordering.
+		// 1) The visibility rule, re-checked at draw time so a disconnect or timeout is
+		//    honoured on the very next frame.
 		uint16_t bpm = 0;
 		uint64_t generation = 0;
-		if (!liveBpm(bpm, generation) || generation != renderGeneration_.load())
+		if (!liveBpm(bpm, generation) || generation != shownGeneration_)
 			return;
-		obs_source_video_render(text_);
+		// 2) Only draw masks rendered from live data of this connection. While a new value
+		//    is being applied the previous (still fresh, same connection) value stays up,
+		//    so BPM changes never flicker. Device/connection changes clear the mask.
+		if (!number_.ensureCaptured(tickCount_) || !number_.capturedLive)
+			return;
+		const bool drawHeart = look_.heart && heart_.ensureCaptured(tickCount_);
+
+		const bool previousSrgb = gs_framebuffer_srgb_enabled();
+		gs_enable_framebuffer_srgb(true);
+		gs_blend_state_push();
+
+		const float heartScale = look_.animate ? animator_.scale(look_.beat) : 1.0f;
+		const float hx = heartCenterX_ - float(heart_.cx) * heartScale * 0.5f;
+		const float hy = heartCenterY_ - float(heart_.cy) * heartScale * 0.5f;
+
+		// Contrast halo behind everything.
+		gs_blend_function_separate(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA, GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+		if (look_.halo && look_.haloColor.w > 0.0f) {
+			if (drawHeart)
+				drawHalo(heart_, hx, hy, heartScale);
+			drawHalo(number_, numberX_, numberY_, 1.0f);
+		}
+
+		if (drawHeart)
+			drawMask(heart_, hx, hy, heartScale, look_.heartColor, "Tint");
+
+		if (look_.invert) {
+			// out = mask * (1 - behind) + behind * (1 - mask): a negative of the background.
+			gs_blend_function_separate(GS_BLEND_INVDSTCOLOR, GS_BLEND_INVSRCCOLOR, GS_BLEND_ONE,
+						   GS_BLEND_INVSRCALPHA);
+			drawMask(number_, numberX_, numberY_, 1.0f, look_.numberColor, "InvertMask");
+		} else {
+			drawMask(number_, numberX_, numberY_, 1.0f, look_.numberColor, "Tint");
+		}
+
+		gs_blend_state_pop();
+		gs_enable_framebuffer_srgb(previousSrgb);
 	}
 
 	uint32_t width() const { return width_.load(); }
@@ -209,20 +375,87 @@ private:
 		return sub_ && sub_->liveBpm(monotonicNs(), timeoutNs_.load(), bpm, generation);
 	}
 
-	void createTextChild(obs_data_t *settings)
+	void drawMask(const GlyphLayer &layer, float x, float y, float scale, const vec4 &tint, const char *technique)
+	{
+		gs_texture_t *tex = gs_texrender_get_texture(layer.mask);
+		if (!tex)
+			return;
+		gs_effect_set_texture(paramImage_, tex);
+		gs_effect_set_vec4(paramTint_, &tint);
+		gs_matrix_push();
+		gs_matrix_translate3f(x, y, 0.0f);
+		gs_matrix_scale3f(scale, scale, 1.0f);
+		while (gs_effect_loop(effect_, technique))
+			gs_draw_sprite(tex, 0, layer.cx, layer.cy);
+		gs_matrix_pop();
+	}
+
+	// One pass: a ring of `haloSize` output pixels around the glyph, never under it.
+	void drawHalo(const GlyphLayer &layer, float x, float y, float scale)
+	{
+		gs_texture_t *tex = gs_texrender_get_texture(layer.mask);
+		if (!tex || scale <= 0.0f)
+			return;
+		const float r = look_.haloSize / scale; // In mask pixels.
+		vec2 size;
+		vec2_set(&size, float(layer.cx), float(layer.cy));
+		gs_effect_set_texture(paramImage_, tex);
+		gs_effect_set_vec4(paramTint_, &look_.haloColor);
+		gs_effect_set_vec2(paramMaskSize_, &size);
+		gs_effect_set_float(paramHaloRadius_, r);
+		gs_matrix_push();
+		gs_matrix_translate3f(x - r * scale, y - r * scale, 0.0f);
+		gs_matrix_scale3f(scale, scale, 1.0f);
+		while (gs_effect_loop(effect_, "Halo"))
+			gs_draw_sprite(tex, 0, uint32_t(std::ceil(float(layer.cx) + 2.0f * r)),
+				       uint32_t(std::ceil(float(layer.cy) + 2.0f * r)));
+		gs_matrix_pop();
+	}
+
+	// Stable layout from the children's sizes; never shrinks while the font is unchanged.
+	void updateLayout()
+	{
+		if (remeasureTick_ && tickCount_ >= remeasureTick_) {
+			remeasureTick_ = 0;
+			maxNumberW_ = maxNumberH_ = 0;
+		}
+		maxNumberW_ = std::max(maxNumberW_, obs_source_get_width(number_.child));
+		maxNumberH_ = std::max(maxNumberH_, obs_source_get_height(number_.child));
+		const float heartW = look_.heart && heart_.child ? float(obs_source_get_width(heart_.child)) : 0.0f;
+		const float heartH = look_.heart && heart_.child ? float(obs_source_get_height(heart_.child)) : 0.0f;
+		const float growth = 1.0f + (look_.animate ? look_.beat : 0.0f);
+		const float heartBox = std::max(heartW, heartH) * growth;
+		const float pad = look_.halo ? look_.haloSize : 0.0f;
+		const float gap = heartBox > 0.0f ? heartH * 0.12f : 0.0f;
+		const float numberW = float(maxNumberW_);
+		const float numberH = float(maxNumberH_);
+		const float contentH = std::max(heartBox, numberH);
+
+		heartCenterX_ = pad + heartBox * 0.5f;
+		heartCenterY_ = pad + contentH * 0.5f;
+		numberX_ = pad + heartBox + gap;
+		numberY_ = pad + (contentH - numberH) * 0.5f;
+		width_.store(uint32_t(std::ceil(numberX_ + numberW + pad)));
+		height_.store(uint32_t(std::ceil(contentH + 2.0f * pad)));
+	}
+
+	static obs_source_t *createTextChild(obs_data_t *settings, const char *text, const char *name)
 	{
 		const char *id = obs_get_latest_input_type_id("text_gdiplus");
 		if (!id) {
-			obs_log(LOG_ERROR, "Text (GDI+) source is not available; BLE Heart Rate cannot draw text");
-			return;
+			obs_log(LOG_ERROR, "Text (GDI+) source is not available; BLE Heart Rate cannot draw");
+			return nullptr;
 		}
 		obs_data_t *childSettings = obs_data_create();
 		fillTextStyle(childSettings, settings);
-		obs_data_set_string(childSettings, "text", layoutSample(displayStyleFromInt(obs_data_get_int(settings, S_STYLE))).c_str());
-		text_ = obs_source_create_private(id, "BLE Heart Rate Text", childSettings);
+		obs_data_set_string(childSettings, "text", text);
+		obs_source_t *child = obs_source_create_private(id, name, childSettings);
 		obs_data_release(childSettings);
+		return child;
 	}
 
+	// Children always draw plain white glyphs; color, halo and inversion happen in our
+	// shader, so only the font matters here.
 	static void fillTextStyle(obs_data_t *child, obs_data_t *settings)
 	{
 		// Copy the font as explicit values: the stored object may hold only defaults, and
@@ -238,71 +471,63 @@ private:
 		obs_data_set_obj(child, "font", childFont);
 		obs_data_release(childFont);
 		obs_data_release(font);
-		obs_data_set_int(child, "color", obs_data_get_int(settings, S_COLOR));
+		obs_data_set_int(child, "color", 0xFFFFFFFF);
 		obs_data_set_int(child, "opacity", 100);
-		obs_data_set_bool(child, "outline", obs_data_get_bool(settings, S_OUTLINE));
-		obs_data_set_int(child, "outline_size", obs_data_get_int(settings, S_OUTLINE_SIZE));
-		obs_data_set_int(child, "outline_color", obs_data_get_int(settings, S_OUTLINE_COLOR));
-		obs_data_set_int(child, "outline_opacity", 100);
-		obs_data_set_int(child, "bk_opacity", 0); // Transparent background, always.
+		obs_data_set_bool(child, "outline", false);
+		obs_data_set_int(child, "bk_opacity", 0);
 		obs_data_set_bool(child, "extents", false);
 		obs_data_set_bool(child, "antialiasing", true);
 	}
 
-	void updateTextStyle(obs_data_t *settings)
+	void updateFont(obs_data_t *settings)
 	{
-		if (!text_)
-			return;
 		obs_data_t *child = obs_data_create();
 		fillTextStyle(child, settings);
-		obs_data_set_int(child, "style_id", style_.load());
 		const char *json = obs_data_get_json(child);
 		std::string signature = json ? json : "";
-		obs_data_erase(child, "style_id");
-		// Only touch the child when the look actually changed (avoids re-rendering the
-		// GDI+ texture and resizing on unrelated setting changes).
-		if (signature != styleSignature_) {
-			styleSignature_ = std::move(signature);
-			obs_source_update(text_, child);
-			styleChanged_.store(true);
+		// Only touch the children when the font actually changed (avoids re-rendering
+		// GDI+ textures and resizing on unrelated setting changes).
+		if (signature != fontSignature_) {
+			fontSignature_ = std::move(signature);
+			if (heart_.child)
+				obs_source_update(heart_.child, child);
+			if (number_.child)
+				obs_source_update(number_.child, child);
+			fontChanged_.store(true);
 		}
 		obs_data_release(child);
 	}
 
-	void setChildText(const std::string &text)
-	{
-		obs_data_t *child = obs_data_create();
-		obs_data_set_string(child, "text", text.c_str());
-		obs_source_update(text_, child);
-		obs_data_release(child);
-	}
-
 	obs_source_t *self_;
-	obs_source_t *text_ = nullptr;
+	GlyphLayer heart_;
+	GlyphLayer number_;
+	gs_effect_t *effect_ = nullptr;
+	gs_eparam_t *paramImage_ = nullptr;
+	gs_eparam_t *paramTint_ = nullptr;
+	gs_eparam_t *paramMaskSize_ = nullptr;
+	gs_eparam_t *paramHaloRadius_ = nullptr;
 
 	std::mutex subMutex_;
 	std::unique_ptr<BleManager::Subscription> sub_;
 	std::string deviceKey_;
 
 	std::atomic<int64_t> timeoutNs_{5 * kSecondNs};
-	std::atomic<int> style_{int(kDefaultDisplayStyle)};
 	std::atomic<bool> deviceChanged_{false};
-	std::atomic<bool> styleChanged_{false};
-	std::atomic<bool> renderAllowed_{false};
-	std::atomic<uint64_t> renderGeneration_{0};
+	std::atomic<bool> fontChanged_{false};
 	std::atomic<uint32_t> width_{0};
 	std::atomic<uint32_t> height_{0};
 
-	// Graphics-thread only.
+	// Graphics-thread only (create runs before any tick/render).
+	Look look_;
+	HeartBeatAnimator animator_;
+	std::string fontSignature_;
 	uint64_t tickCount_ = 0;
-	uint64_t readyTick_ = 0;
 	uint64_t shownGeneration_ = 0;
 	uint64_t remeasureTick_ = 0;
-	std::string styleSignature_; // Touched by create (UI) then update (graphics), never concurrently.
-	std::string requestedText_;
-	int64_t requestedKey_ = 0;
-	bool requestedLive_ = false;
-	bool appliedLive_ = false;
+	int64_t numberKey_ = 0;
+	uint32_t maxNumberW_ = 0;
+	uint32_t maxNumberH_ = 0;
+	float heartCenterX_ = 0, heartCenterY_ = 0, numberX_ = 0, numberY_ = 0;
 };
 
 // --- property callbacks -----------------------------------------------------------------
@@ -369,11 +594,19 @@ bool onReconnectClicked(obs_properties_t *, obs_property_t *, void *data)
 	return true;
 }
 
-bool onOutlineModified(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
+bool onLookModified(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
 {
-	const bool outline = obs_data_get_bool(settings, S_OUTLINE);
-	obs_property_set_visible(obs_properties_get(props, S_OUTLINE_SIZE), outline);
-	obs_property_set_visible(obs_properties_get(props, S_OUTLINE_COLOR), outline);
+	const bool heart = styleShowsHeart(displayStyleFromInt(obs_data_get_int(settings, S_STYLE)));
+	const bool animate = obs_data_get_bool(settings, S_HEART_ANIMATE);
+	const bool fixed = obs_data_get_int(settings, S_NUMBER_MODE) == NumberFixedColor;
+	const bool halo = obs_data_get_bool(settings, S_HALO);
+	obs_property_set_visible(obs_properties_get(props, S_HEART_COLOR), heart);
+	obs_property_set_visible(obs_properties_get(props, S_HEART_ANIMATE), heart);
+	obs_property_set_visible(obs_properties_get(props, S_HEART_BEAT), heart && animate);
+	obs_property_set_visible(obs_properties_get(props, S_COLOR), fixed);
+	obs_property_set_visible(obs_properties_get(props, S_HALO_COLOR), halo);
+	obs_property_set_visible(obs_properties_get(props, S_HALO_SIZE), halo);
+	obs_property_set_visible(obs_properties_get(props, S_HALO_OPACITY), halo);
 	return true;
 }
 
@@ -389,11 +622,11 @@ obs_properties_t *getProperties(void *data)
 		obs_data_release(settings);
 	}
 
+	// Sensor
 	obs_property_t *list =
 		obs_properties_add_list(props, S_DEVICE, T("Device"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	fillDeviceList(list, currentKey);
 	obs_properties_add_button(props, S_MANAGE, T("ManageSensors"), onManageClicked);
-
 	const std::string status = std::string(T("Status")) + ": " + (self ? self->statusText() : T("Status.NoSensor"));
 	obs_properties_add_text(props, S_STATUS, status.c_str(), OBS_TEXT_INFO);
 	obs_properties_add_button(props, S_REFRESH, T("RefreshStatus"), onRefreshClicked);
@@ -402,19 +635,43 @@ obs_properties_t *getProperties(void *data)
 	obs_property_t *timeout = obs_properties_add_int_slider(props, S_TIMEOUT, T("StaleTimeout"), 2, 15, 1);
 	obs_property_int_set_suffix(timeout, " s");
 
+	// Appearance
+	obs_properties_t *look = obs_properties_create();
 	obs_property_t *style =
-		obs_properties_add_list(props, S_STYLE, T("DisplayStyle"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+		obs_properties_add_list(look, S_STYLE, T("DisplayStyle"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(style, T("DisplayStyle.NumberOnly"), int(DisplayStyle::NumberOnly));
 	obs_property_list_add_int(style, T("DisplayStyle.NumberUnit"), int(DisplayStyle::NumberUnit));
 	obs_property_list_add_int(style, T("DisplayStyle.HeartNumber"), int(DisplayStyle::HeartNumber));
 	obs_property_list_add_int(style, T("DisplayStyle.HeartNumberUnit"), int(DisplayStyle::HeartNumberUnit));
+	obs_property_set_modified_callback(style, onLookModified);
+	obs_properties_add_font(look, S_FONT, T("Font"));
+	obs_properties_add_group(props, "group_look", T("Group.Look"), OBS_GROUP_NORMAL, look);
 
-	obs_properties_add_font(props, S_FONT, T("Font"));
-	obs_properties_add_color(props, S_COLOR, T("Color"));
-	obs_property_t *outline = obs_properties_add_bool(props, S_OUTLINE, T("Outline"));
-	obs_property_set_modified_callback(outline, onOutlineModified);
-	obs_properties_add_int(props, S_OUTLINE_SIZE, T("OutlineSize"), 1, 20, 1);
-	obs_properties_add_color(props, S_OUTLINE_COLOR, T("OutlineColor"));
+	obs_properties_t *heart = obs_properties_create();
+	obs_properties_add_color(heart, S_HEART_COLOR, T("HeartColor"));
+	obs_property_t *animate = obs_properties_add_bool(heart, S_HEART_ANIMATE, T("HeartAnimate"));
+	obs_property_set_modified_callback(animate, onLookModified);
+	obs_property_t *beat = obs_properties_add_int_slider(heart, S_HEART_BEAT, T("HeartBeatStrength"), 0, 40, 1);
+	obs_property_int_set_suffix(beat, " %");
+	obs_properties_add_group(props, "group_heart", T("Group.Heart"), OBS_GROUP_NORMAL, heart);
+
+	obs_properties_t *numbers = obs_properties_create();
+	obs_property_t *mode = obs_properties_add_list(numbers, S_NUMBER_MODE, T("NumberMode"), OBS_COMBO_TYPE_LIST,
+						       OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(mode, T("NumberMode.Invert"), NumberInvert);
+	obs_property_list_add_int(mode, T("NumberMode.Fixed"), NumberFixedColor);
+	obs_property_set_modified_callback(mode, onLookModified);
+	obs_properties_add_color(numbers, S_COLOR, T("Color"));
+	obs_properties_add_group(props, "group_numbers", T("Group.Numbers"), OBS_GROUP_NORMAL, numbers);
+
+	obs_properties_t *halo = obs_properties_create();
+	obs_properties_add_color(halo, S_HALO_COLOR, T("HaloColor"));
+	obs_property_t *size = obs_properties_add_int_slider(halo, S_HALO_SIZE, T("HaloSize"), 1, 12, 1);
+	obs_property_int_set_suffix(size, " px");
+	obs_property_t *opacity = obs_properties_add_int_slider(halo, S_HALO_OPACITY, T("HaloOpacity"), 0, 100, 1);
+	obs_property_int_set_suffix(opacity, " %");
+	obs_property_t *haloGroup = obs_properties_add_group(props, S_HALO, T("Group.Halo"), OBS_GROUP_CHECKABLE, halo);
+	obs_property_set_modified_callback(haloGroup, onLookModified);
 	return props;
 }
 
@@ -433,10 +690,16 @@ void getDefaults(obs_data_t *settings)
 	obs_data_set_default_obj(settings, S_FONT, font);
 	obs_data_release(font);
 
+	// Colors are OBS 0xAABBGGRR values.
+	obs_data_set_default_int(settings, S_HEART_COLOR, 0xFF3A30E8); // red
+	obs_data_set_default_bool(settings, S_HEART_ANIMATE, true);
+	obs_data_set_default_int(settings, S_HEART_BEAT, 18);
+	obs_data_set_default_int(settings, S_NUMBER_MODE, NumberInvert);
 	obs_data_set_default_int(settings, S_COLOR, 0xFFFFFFFF);
-	obs_data_set_default_bool(settings, S_OUTLINE, false);
-	obs_data_set_default_int(settings, S_OUTLINE_SIZE, 4);
-	obs_data_set_default_int(settings, S_OUTLINE_COLOR, 0xFF000000);
+	obs_data_set_default_bool(settings, S_HALO, true);
+	obs_data_set_default_int(settings, S_HALO_COLOR, 0xFF000000);
+	obs_data_set_default_int(settings, S_HALO_SIZE, 3);
+	obs_data_set_default_int(settings, S_HALO_OPACITY, 60);
 }
 
 } // namespace
@@ -456,7 +719,7 @@ void registerHeartRateSource()
 	info.update = [](void *data, obs_data_t *settings) { static_cast<HeartRateSource *>(data)->applySettings(settings); };
 	info.get_defaults = getDefaults;
 	info.get_properties = getProperties;
-	info.video_tick = [](void *data, float) { static_cast<HeartRateSource *>(data)->tick(); };
+	info.video_tick = [](void *data, float seconds) { static_cast<HeartRateSource *>(data)->tick(seconds); };
 	info.video_render = [](void *data, gs_effect_t *) { static_cast<HeartRateSource *>(data)->render(); };
 	info.get_width = [](void *data) { return static_cast<HeartRateSource *>(data)->width(); };
 	info.get_height = [](void *data) { return static_cast<HeartRateSource *>(data)->height(); };

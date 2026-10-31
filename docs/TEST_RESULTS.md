@@ -70,3 +70,29 @@ non-transparent pixels. Raw logs: `docs/itest-*.log`. Development build with the
   same DLL and layout were loaded from a portable OBS instead, so the system OBS installation was not
   modified.
 - The Linux unit-test job runs only in CI.
+
+## 6. Update: safety, resource use and new renderer
+
+Run after the Bluetooth safety hardening, the resource optimization and the new renderer
+(animated heart, contrast halo, inverted numbers):
+
+- Unit tests: **55/55 passed** (3 consecutive runs). New tests cover: unsupported devices are never
+  retried automatically, only after an explicit request; no background scanning by default; the
+  background scan (when enabled) is passive and drops unrelated devices before parsing; silent
+  sensors back off; heartbeat pulse shape and BPM timing; number/heart text parts.
+- Real Bluetooth (`ble-probe`, absent sensor, 20 s): **≈0.16 % of one core** without background
+  scanning vs ≈1.7 % with it. That measurement is why background scanning is off by default.
+- Real OBS 32.2.2 (portable, simulated sensor, 1080p60):
+  - The heart visibly pulses (frame-to-frame size changes).
+  - Inverted digits are black over white, white over black and light over grey, split exactly at
+    a background edge (see `docs/example.png`). The fixed-color mode works.
+  - 0 skipped frames, average frame render 0.26–0.31 ms.
+  - No blank frame across 160 captures spanning about 8 BPM changes (a one-frame flicker on BPM
+    change was found and fixed).
+  - Hide/show behaviour is unchanged. Clean shutdown with 0 memory leaks.
+- Found and fixed during this round: the first halo (12 offset copies) also darkened the area under
+  the digits, which turned the inversion into plain white. It is now a single-pass ring that never
+  draws under the glyph.
+
+Still not verified: a real heart-rate strap, clicking through the dialog by hand, the invert mode
+under the OBS GPU-scaled preview with filters applied (documented as unsupported).

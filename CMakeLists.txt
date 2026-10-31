@@ -37,6 +37,7 @@ target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
     src/plugin-main.cpp
+    src/core/heart_animation.hpp
     src/core/heart_rate_parser.cpp
     src/core/heart_rate_parser.hpp
     src/core/sensor_state.cpp

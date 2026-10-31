@@ -69,14 +69,55 @@ Properties:
 | Refresh status / Reconnect now | Update the status line / retry immediately. Normally not needed. |
 | Reconnect automatically | On by default. Retries with backoff whenever the sensor is missing. |
 | Hide when no new data for | 2-15 s (default 5 s). The source hides if no valid reading arrives in this time. |
-| Display style | `82`, `82 BPM`, `♥ 82`, `♥ 82 BPM` (default) |
-| Font, Text color, Outline | Basic styling. The background is always transparent. |
+| **Appearance** → Display style, Font | `82`, `82 BPM`, `♥ 82`, `♥ 82 BPM` (default); any installed font |
+| **Heart** → color, *Beat with my heart rate*, beat strength | The heart pulses ("lub-dub") at your live BPM. Default: red, on, 18 % |
+| **Numbers** → *Invert what's behind (negative)* or *Fixed color* | Default: invert. The digits become a negative of whatever is behind them: black on white, white on black, cyan on red |
+| **Contrast halo** (on/off), color, size, opacity | A ring around the heart and digits so they stay readable on any background (default: black, 3 px, 60 %) |
+
+The background is always transparent.
 
 Tips:
 - Two sources can use the same sensor; they share one Bluetooth connection.
 - If the selected sensor is unavailable the source stays invisible. It never switches to another
   sensor on its own.
 - If a sensor says *"Windows denied access"*, pair it once in **Windows Settings → Bluetooth & devices**.
+- *Invert what's behind* needs the source to draw straight onto the scene. If you add filters to
+  this source, OBS draws it on its own layer first and the digits show plain white instead. Use
+  *Fixed color* in that case.
+
+## Bluetooth safety
+
+The plugin is designed to be harmless to every Bluetooth device, yours and other people's:
+
+- **Read-only.** The only thing it ever writes to a device is the standard "notify me" switch
+  (CCCD) of the Heart Rate Measurement characteristic 0x2A37 on the sensor *you* selected. It
+  never writes any other setting, never touches firmware, and never reads personal data.
+- **Never pairs, unpairs or changes Windows Bluetooth settings.** It doesn't turn the radio on or
+  off and doesn't change drivers. Your other Bluetooth devices (headphones, mouse, keyboard,
+  controllers) are not connected to or disturbed. Closing its connection never disconnects a
+  device that Windows or another app is using.
+- **Connects only to the sensor you chose.** It matches by Bluetooth address, never by name. It
+  never switches to another device by itself.
+- **Leaves non-heart-rate devices alone.** If you select a device that turns out to have no
+  standard Heart Rate service, it disconnects right away and never retries on its own. The dialog
+  also warns before you select a device that doesn't advertise heart rate.
+- **Gentle on the sensor.** Retries back off up to 15 s and stay slow for sensors that connect
+  but send nothing.
+- **Listens without transmitting.** Discovery uses an active scan only while the Scan dialog is
+  open. There is no background scanning (see resource use).
+- Like any heart-rate app, a sensor connected to OBS uses one of its connection slots. Straps
+  that allow only one connection can't talk to a phone app at the same time.
+
+## Resource use
+
+Measured on Windows 11 with OBS 32.2.2 at 1080p60:
+- **Rendering:** 0 skipped frames. The plugin's GPU work is a few tiny textured quads per frame.
+  The glyph masks are re-rendered only when the displayed number changes (≈1×/s), and the halo is
+  one shader pass.
+- **CPU:** ≈0.16 % of one core while waiting for an absent sensor (periodic connection attempts,
+  no background scan). The scan was measured at ≈1.7 %, which is why it is off. While connected,
+  the Bluetooth thread sleeps until a notification arrives.
+- **Memory:** a few MB. One worker thread per sensor in use and none when no source uses a sensor.
 
 ## How it works
 
@@ -85,7 +126,7 @@ Tips:
                                                          reconnect + backoff, shared by sources)
                                                               │ mutex-protected snapshot
  OBS graphics thread: HeartRateSource::video_tick/render ◄────┘
-     └── renders a private "Text (GDI+)" child source ONLY when shouldRender() is true
+     └── draws heart + digit masks (halo, pulse, invert shader) ONLY when shouldRender() is true
 ```
 
 | Component | File | Responsibility |
@@ -109,15 +150,18 @@ Key design decisions:
 - **Rendering.** Visibility is decided on every frame from the time of the last valid measurement,
   not from the connection state. The renderer checks freshness again at draw time, so a disconnect
   or timeout hides the source on the very next frame. After a device switch or reconnect, a new
-  measurement is required, and the child text has to have been updated, before anything is drawn.
-  While invisible, the child holds a sample text (`♥ 888 BPM`) that is never drawn, only to keep
-  the source's size stable for transforms.
+  measurement is required, and its mask has to be re-rendered, before anything is drawn.
+  Glyphs come from private *Text (GDI+)* children captured into offscreen masks. A shader
+  (`data/effects/hr_overlay.effect`) tints them, draws the halo ring, and inverts the background with
+  an `INVDSTCOLOR`/`INVSRCCOLOR` blend. While invisible, the number child holds a sample text
+  (`888 BPM`) that is never drawn, only to keep the source's size stable for transforms.
 - **Threads.** Bluetooth runs on per-sensor worker threads (MTA). WinRT async operations are
   awaited with a 50 ms cancellation granularity. Event handlers go through a `SessionSink` gate
   that is detached before OS objects are released, so no callback can reach a destroyed object.
   Removing a source never blocks the video thread. OBS shutdown cancels and joins every worker.
-- **Reconnect.** Exponential backoff (1 s → 30 s, ±20 % jitter). While waiting, a passive
-  advertisement scan wakes the link as soon as the sensor reappears. A link that receives no
+- **Reconnect.** Exponential backoff (1 s → 15 s, ±20 % jitter). The backoff resets only after real
+  data was received. An optional passive scan to wake early (`ManagerConfig::backgroundScan`) is off
+  by default to save CPU. A link that receives no
   notifications for 20 s is torn down and rebuilt, which covers sleep/wake and silent link loss.
 - **Packets.** UINT8/UINT16 BPM, contact status, energy expended, RR intervals and variable lengths
   are all supported. Malformed packets are ignored (they never refresh freshness). A BPM of 0 or
@@ -132,7 +176,7 @@ pinned in `buildspec.json`.
 ```powershell
 cmake --preset windows-x64
 cmake --build --preset windows-x64-release          # build_x64\Release\obs-ble-sensors.dll
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release\obs-ble-sensors-1.0.0-windows-x64.zip
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release\*-setup.exe + .zip (needs Inno Setup 6)
 ```
 
 Unit tests (no OBS, Qt or Bluetooth needed; also run on Linux in CI):
@@ -173,8 +217,9 @@ for the repeatable hardware checklist.
   hides the value in the meantime.
 - Sensors that rotate resolvable private addresses without being paired may need pairing in Windows
   once, so that their identity address can be resolved.
-- Text is drawn with OBS's built-in *Text (GDI+)* renderer, so only outline styling is available
-  (no drop shadow).
+- Inversion is a difference blend: on mid-grey backgrounds the digits stay light grey, and the halo
+  keeps them readable. It is not available when the source has filters (see Tips).
+- A switched-on sensor is picked up within the retry interval (up to 15 s), not instantly.
 - English UI only (strings live in `data/locale/en-US.ini`).
 
 ## License
