@@ -638,13 +638,15 @@ void BleManager::runLink(std::shared_ptr<Link> link)
 				result.session.reset(); // ...so tearing down the OS objects is safe.
 
 				std::string why;
+				bool stopping = false;
 				{
 					std::lock_guard<std::mutex> lock(link->m);
 					if (!link->lost)
 						link->machine.disconnected(reason);
 					why = link->machine.snapshot().detail;
+					stopping = link->stop; // Read under the lock (found by ThreadSanitizer).
 				}
-				if (!link->stop)
+				if (!stopping)
 					logEvent(*link, "disconnected" + (why.empty() ? std::string() : " (" + why + ")"));
 				delay = deliveredData ? backoff.next() : silentBackoff.next();
 			} else {

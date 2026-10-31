@@ -311,7 +311,7 @@ TEST(registry_concurrent_saves_never_regress_and_reads_never_wait_on_io)
 	std::vector<SavedDevice> onDisk;
 	std::atomic<int> writes{0};
 	reg.setPersist([&](const std::vector<SavedDevice> &d) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(20)); // slow disk
+		std::this_thread::sleep_for(std::chrono::milliseconds(100)); // slow disk
 		std::lock_guard<std::mutex> lock(fileMutex);
 		onDisk = d;
 		writes++;
@@ -329,10 +329,11 @@ TEST(registry_concurrent_saves_never_regress_and_reads_never_wait_on_io)
 	// While writers wait on the slow "disk", lookups must stay fast.
 	const auto start = std::chrono::steady_clock::now();
 	int lookups = 0;
-	while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(150)) {
+	while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(400)) {
 		const auto t0 = std::chrono::steady_clock::now();
 		(void)reg.find("ble:public:A0:00:00:00:00:01");
-		CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(15));
+		// Blocking on the write would take >= 100 ms; 60 ms leaves room for slow (sanitizer) runs.
+		CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(60));
 		lookups++;
 	}
 	for (auto &w : writers)
