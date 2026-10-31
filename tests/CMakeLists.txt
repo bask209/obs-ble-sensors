@@ -53,3 +53,18 @@ if(WIN32)
   target_compile_options(ble-probe PRIVATE /W4 /WX /wd4127 /utf-8 /permissive-)
   target_link_libraries(ble-probe PRIVATE WindowsApp Threads::Threads)
 endif()
+
+# Coverage-guided fuzzing (Clang/libFuzzer only): cmake -DBLEHR_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+option(BLEHR_FUZZ "Build the libFuzzer target" OFF)
+if(BLEHR_FUZZ)
+  add_executable(
+    ble-fuzz
+    fuzz/fuzz_all.cpp
+    ${CORE_DIR}/heart_rate_parser.cpp
+    ${CORE_DIR}/sensor_state.cpp
+    ${CORE_DIR}/device_identity.cpp
+  )
+  target_include_directories(ble-fuzz PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+  target_compile_options(ble-fuzz PRIVATE -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -g -O1)
+  target_link_options(ble-fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+endif()

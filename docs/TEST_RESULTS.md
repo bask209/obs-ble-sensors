@@ -146,3 +146,13 @@ released from `1.0.0`; the same code plus this fix ships as `1.0.1`.
   - Profiler: source tick 99th percentile 0.024 vs 0.020 ms.
   - 0 skipped frames.
   - Release DLL inside OBS: Bluetooth thread base priority 4, version 1.0.2, 0 memory leaks on exit.
+
+## 10. Third audit round (v1.0.3)
+
+- MSVC `/analyze` over the whole plugin: one finding (C6221) fixed, then clean.
+- Unit tests 74/74 (new: hostile config content bounded and sanitized); ASan 10/10 locally.
+- Real-stack soak (`ble-probe`, 4 min of real connection attempts): handles 166-170, private memory
+  2.0-2.1 MB, threads 6, all flat. CPU 188 ms in 240 s.
+- Installer ACL command verified on a scratch folder: Users have read and execute; Administrators and
+  SYSTEM have full control.
+- CI now also runs libFuzzer (3 min) and CodeQL; all actions are pinned to commit SHAs.

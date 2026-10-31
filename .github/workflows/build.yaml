@@ -20,7 +20,7 @@ jobs:
       matrix:
         os: [windows-2022, ubuntu-24.04]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Configure
@@ -44,7 +44,7 @@ jobs:
           - os: ubuntu-24.04
             flags: -fsanitize=thread -g -O1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Configure
@@ -64,19 +64,33 @@ jobs:
         if: runner.os == 'Linux'
         run: ./build_asan/ble-sensors-tests
 
+  fuzz:
+    name: Coverage-guided fuzzing (libFuzzer + ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build fuzzer
+        run: |
+          cmake -S tests -B build_fuzz -DBLEHR_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build_fuzz --target ble-fuzz --parallel
+      - name: Fuzz for 3 minutes
+        run: ./build_fuzz/ble-fuzz -max_total_time=180 -print_final_stats=1 -max_len=256
+
   windows-plugin:
     name: Windows x64 plugin
     runs-on: windows-2022
-    needs: [unit-tests, sanitizers]
+    needs: [unit-tests, sanitizers, fuzz]
     defaults:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Cache OBS dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .deps
           key: obs-deps-${{ hashFiles('buildspec.json') }}
@@ -96,7 +110,7 @@ jobs:
             "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name
           } | Set-Content -Encoding ascii release/SHA256SUMS.txt
           Get-Content release/SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: obs-ble-sensors-windows-x64
           path: |
@@ -114,11 +128,11 @@ jobs:
       id-token: write     # build-provenance attestation
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: obs-ble-sensors-windows-x64
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             *-setup.exe

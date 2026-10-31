@@ -24,9 +24,12 @@ void DeviceRegistry::load(std::vector<SavedDevice> devices)
 	std::lock_guard<std::mutex> lock(mutex_);
 	devices_.clear();
 	for (auto &d : devices) {
-		// Drop duplicates and entries without a usable address.
-		if (d.identity.address == 0)
+		// Drop duplicates and entries without a usable address; the file may be corrupt
+		// or edited by hand, so names are sanitized and the count is bounded.
+		if (d.identity.address == 0 || devices_.size() >= kMaxDevices)
 			continue;
+		d.alias = sanitizeDeviceName(d.alias);
+		d.lastKnownName = sanitizeDeviceName(d.lastKnownName);
 		const auto key = d.key();
 		if (std::none_of(devices_.begin(), devices_.end(), [&](const SavedDevice &e) { return e.key() == key; }))
 			devices_.push_back(std::move(d));
@@ -56,11 +59,15 @@ bool DeviceRegistry::save(const SavedDevice &device)
 	const auto key = device.key();
 	auto it = std::find_if(devices_.begin(), devices_.end(), [&](const SavedDevice &d) { return d.key() == key; });
 	if (it == devices_.end()) {
+		if (devices_.size() >= kMaxDevices)
+			return false;
 		devices_.push_back(device);
+		devices_.back().alias = sanitizeDeviceName(device.alias);
+		devices_.back().lastKnownName = sanitizeDeviceName(device.lastKnownName);
 	} else {
-		it->alias = device.alias;
+		it->alias = sanitizeDeviceName(device.alias);
 		if (!device.lastKnownName.empty())
-			it->lastKnownName = device.lastKnownName;
+			it->lastKnownName = sanitizeDeviceName(device.lastKnownName);
 		if (!device.identity.windowsDeviceId.empty())
 			it->identity.windowsDeviceId = device.identity.windowsDeviceId;
 	}
@@ -73,7 +80,7 @@ bool DeviceRegistry::rename(const std::string &key, const std::string &alias)
 	auto it = std::find_if(devices_.begin(), devices_.end(), [&](const SavedDevice &d) { return d.key() == key; });
 	if (it == devices_.end())
 		return false;
-	it->alias = alias;
+	it->alias = sanitizeDeviceName(alias);
 	return persistLocked(lock);
 }
 
@@ -95,8 +102,9 @@ void DeviceRegistry::noteConnected(const std::string &key, int64_t unixTime, con
 	if (it == devices_.end())
 		return;
 	bool changed = false;
-	if (!name.empty() && name != it->lastKnownName) {
-		it->lastKnownName = name;
+	const std::string clean = sanitizeDeviceName(name);
+	if (!clean.empty() && clean != it->lastKnownName) {
+		it->lastKnownName = clean;
 		changed = true;
 	}
 	if (!windowsDeviceId.empty() && windowsDeviceId != it->identity.windowsDeviceId) {

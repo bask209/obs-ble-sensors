@@ -651,7 +651,7 @@ void fillDeviceList(obs_property_t *list, const std::string &currentKey)
 	}
 }
 
-bool onManageClicked(obs_properties_t *props, obs_property_t *, void *data)
+bool onManageClicked(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *self = static_cast<HeartRateSource *>(data);
 	obs_weak_source_t *weak = obs_source_get_weak_source(self->source());
@@ -677,11 +677,10 @@ bool onManageClicked(obs_properties_t *props, obs_property_t *, void *data)
 		obs_source_update(source, update);
 		obs_data_release(update);
 	}
-	// Saved devices may have been added/renamed/removed: refresh the dropdown.
-	obs_data_t *settings = obs_source_get_settings(source);
-	fillDeviceList(obs_properties_get(props, S_DEVICE), obs_data_get_string(settings, S_DEVICE));
-	obs_data_release(settings);
 	obs_source_release(source);
+	// Returning true makes OBS rebuild the properties (and the sensor dropdown) from
+	// scratch. `props` is deliberately not touched after the modal dialog: OBS may have
+	// replaced it while the dialog was open.
 	return true;
 }
 

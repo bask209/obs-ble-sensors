@@ -16,7 +16,7 @@ itself every time OBS starts.
 
 *Animated heart, digits that invert whatever is behind them, contrast halo. Captured in OBS 32.2.2.*
 
-The **[review report](#review-report-v102)** below documents the efficiency, security and compatibility
+The **[review report](#review-report-v103)** below documents the efficiency, security and compatibility
 work and what was measured.
 
 ## Compatibility
@@ -159,7 +159,7 @@ The plugin is designed to be harmless to every Bluetooth device, yours and other
   allow only one connection can't talk to a phone app at the same time, and Windows may refuse a
   second app while OBS holds the device.
 
-## Review report (v1.0.2)
+## Review report (v1.0.3)
 
 This section records the in-depth review of resource use, security and compatibility, every change
 it led to, and **what was measured versus what could not be verified**.
@@ -223,7 +223,7 @@ tampering and the integrity of the download.
 
 | Verified | How |
 | --- | --- |
-| 73 automated tests (parsers, fuzzing, state machine, connection manager with simulated devices, lock-free render path under load, registry concurrency, security) | Every build; repeated runs; AddressSanitizer clean (15+ consecutive runs); CI also runs UBSan and ThreadSanitizer |
+| 74 automated tests (parsers, fuzzing, state machine, connection manager with simulated devices, lock-free render path under load, registry concurrency, security) | Every build; repeated runs; AddressSanitizer clean (15+ consecutive runs); CI also runs UBSan and ThreadSanitizer |
 | Rendering, hiding, reconnect, restart persistence, shared connections, pause-when-hidden, clean shutdown | Real OBS 32.2.2 (portable copy) with the simulated sensor, driven through obs-websocket |
 | Real Windows Bluetooth: scanning, paired-device listing, unsupported-device handling, absent device | `ble-probe` on this PC (Qualcomm FastConnect 7800) |
 | Real heart-rate device | Galaxy Watch5 Pro: 19 minutes of continuous live data with v1.0.0-beta.1 in the user's OBS. The new connection code found its heart-rate service; live streaming through the final code still needs the watch broadcasting. |
@@ -258,6 +258,20 @@ disk I/O, radio time and scheduler priority.
 
 At this point the plugin's own cost is at the measurement noise floor. What remains is the
 Windows Bluetooth stack and OBS compositing a small texture, which no plugin can avoid.
+
+### 6. Third audit: static analysis, coverage-guided fuzzing, leaks, supply chain
+
+| Angle | What was done | Result |
+| --- | --- | --- |
+| Static analysis (whole plugin, incl. OBS/Qt/WinRT code) | MSVC `/analyze` code analysis on every source file | One finding (ambiguous error-code comparison) fixed; **clean** |
+| Semantic code scanning | **CodeQL** (security-and-quality queries) on the full plugin build, on every push and weekly | Runs in CI; results go to the repository's Security tab |
+| Coverage-guided fuzzing | **libFuzzer** with ASan and UBSan exploring all 7 measurement formats, the state machine, the packed render word, the name sanitizer and the key parser, with invariant checks | Runs 3 minutes on every CI build |
+| Long-running leak check (real Bluetooth stack) | 4-minute soak of continuous real connection attempts, sampled every 30 s | Handles flat (166-170), private memory flat (2.0-2.1 MB), threads flat (6); CPU ≈0.08 % of one core |
+| Untrusted config file | `devices.json` larger than 1 MB is ignored; at most 100 sensors; aliases and names sanitized on load, save and rename | Unit test with a hostile 500-entry file |
+| OBS integration | The sensor dialog no longer touches the properties object after it closes (OBS may have replaced it) | Removes a theoretical use-after-free |
+| Installer lock-down | The exact `icacls` command was executed and verified | Normal users get read and execute only; Administrators and SYSTEM keep full control |
+| Supply chain | Every GitHub Action pinned to an exact commit SHA; Dependabot proposes updates; least-privilege tokens; checksums and build-provenance attestations on releases | Release 1.0.2 attestation verified (SLSA provenance) |
+| Timer resolution and power | The plugin never raises the Windows timer resolution and has no polling loops while streaming | Verified by code review |
 
 ## How it works
 

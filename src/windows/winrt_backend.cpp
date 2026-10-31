@@ -590,10 +590,12 @@ public:
 			r.session = std::move(session);
 			return std::move(r);
 		} catch (const winrt::hresult_error &e) {
-			if (e.code() == E_ACCESSDENIED)
+			const HRESULT code = e.code();
+			const HRESULT notAvailable = HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_AVAILABLE);
+			const HRESULT notReady = HRESULT_FROM_WIN32(ERROR_NOT_READY);
+			if (code == E_ACCESSDENIED)
 				return fail(ConnectStatus::AccessDenied, {});
-			if (e.code() == HRESULT_FROM_WIN32(ERROR_DEVICE_NOT_AVAILABLE) ||
-			    e.code() == HRESULT_FROM_WIN32(ERROR_NOT_READY))
+			if (code == notAvailable || code == notReady)
 				return fail(ConnectStatus::BluetoothOff, {});
 			return fail(ConnectStatus::Failed, narrow(e.message()));
 		} catch (...) {

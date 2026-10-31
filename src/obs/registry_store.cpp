@@ -7,6 +7,7 @@ namespace blehr {
 
 namespace {
 constexpr int kFormatVersion = 1;
+constexpr int64_t kMaxFileBytes = 1024 * 1024;
 }
 
 std::string registryFilePath()
@@ -25,6 +26,16 @@ std::string registryFilePath()
 std::vector<SavedDevice> loadRegistryFile(const std::string &path)
 {
 	std::vector<SavedDevice> devices;
+	// The file is small by design; refuse anything implausibly large (corruption or
+	// tampering) instead of parsing it into memory.
+	for (const std::string &candidate : {path, path + ".bak"}) {
+		const int64_t size = os_get_file_size(candidate.c_str());
+		if (size > kMaxFileBytes) {
+			blog(LOG_WARNING, "[obs-ble-sensors] %s is too large (%lld bytes); ignoring the saved sensor list",
+			     candidate.c_str(), (long long)size);
+			return devices;
+		}
+	}
 	// Falls back to the ".bak" copy written by obs_data_save_json_safe if the main file
 	// is missing or corrupt.
 	obs_data_t *root = obs_data_create_from_json_file_safe(path.c_str(), "bak");

@@ -25,6 +25,9 @@ struct SavedDevice {
 
 class DeviceRegistry {
 public:
+	// Upper bound on saved sensors; also applied to whatever is read from disk.
+	static constexpr size_t kMaxDevices = 100;
+
 	using PersistFn = std::function<bool(const std::vector<SavedDevice> &)>;
 
 	void setPersist(PersistFn fn);

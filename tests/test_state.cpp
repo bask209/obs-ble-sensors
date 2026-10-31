@@ -343,3 +343,32 @@ TEST(registry_concurrent_saves_never_regress_and_reads_never_wait_on_io)
 	CHECK_EQ(onDisk.size(), size_t(20)); // the newest state is what ended up on disk
 	CHECK(writes.load() <= 20);           // stale snapshots were skipped, never written last
 }
+
+TEST(registry_bounds_and_sanitizes_untrusted_content)
+{
+	DeviceRegistry reg;
+	std::vector<SavedDevice> fromDisk;
+	for (int i = 0; i < 500; ++i) {
+		SavedDevice d;
+		d.identity.address = 0xB00000000000ULL + uint64_t(i);
+		d.alias = std::string("evil\x1b[2J") + std::string(1000, 'x');
+		d.lastKnownName = "<b>html</b>\x07";
+		fromDisk.push_back(d);
+	}
+	reg.load(fromDisk);
+	const auto list = reg.list();
+	CHECK_EQ(list.size(), DeviceRegistry::kMaxDevices);
+	CHECK(list[0].alias.size() <= 64);
+	CHECK(list[0].alias.find('\x1b') == std::string::npos);
+	CHECK(list[0].lastKnownName.find('\x07') == std::string::npos);
+	// Full registry refuses new devices but still updates existing ones.
+	SavedDevice extra;
+	extra.identity.address = 0xC00000000001ULL;
+	CHECK(!reg.save(extra));
+	SavedDevice existing = list[0];
+	existing.alias = "Chest\nstrap";
+	CHECK(reg.save(existing));
+	CHECK_EQ(reg.find(existing.key())->alias, std::string("Cheststrap")); // newline removed
+	CHECK(reg.rename(existing.key(), std::string(200, 'y')));
+	CHECK(reg.find(existing.key())->alias.size() <= 64);
+}

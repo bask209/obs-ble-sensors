@@ -38,7 +38,7 @@
     },
     "name": "obs-ble-sensors",
     "displayName": "OBS BLE Sensors",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "author": "bask209",
     "website": "https://github.com/bask209/obs-ble-sensors",
     "email": "bask209@users.noreply.github.com"
