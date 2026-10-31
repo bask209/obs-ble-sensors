@@ -118,3 +118,12 @@ under the OBS GPU-scaled preview with filters applied (documented as unsupported
   0 skipped frames out of 7,567 at 1080p60; no flicker across 160 consecutive captures. Clean
   shutdown with 0 memory leaks.
 - Release DLL: Control Flow Guard, CET-compatible, ASLR (high entropy) and DEP confirmed with `dumpbin`.
+
+## 8. Release 1.0.1
+
+The first `1.0.0` tag build failed in CI: the Windows AddressSanitizer job caught a
+**use-after-scope in a unit test**. A test's logging callback wrote into a list declared after the
+connection manager, so a worker thread could log into it after it went out of scope. The plugin's own
+callback logs to OBS and is unaffected. The test was fixed, the callback lifetime rule was documented,
+and the ASan suite then passed **20 consecutive runs** locally (plus 10 normal runs). Nothing was
+released from `1.0.0`; the same code plus this fix ships as `1.0.1`.

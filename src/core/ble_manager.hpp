@@ -98,6 +98,8 @@ public:
 
 	void setConnectedCallback(ConnectedFn fn);
 	// Receives short, human-readable connection events (deduplicated per sensor).
+	// Called from worker threads until shutdown() returns, so everything it touches must
+	// outlive the manager.
 	using EventLogFn = std::function<void(const std::string &key, const std::string &message)>;
 	void setEventLog(EventLogFn fn);
 	// Asynchronously reports the devices paired with Windows to the scan listeners

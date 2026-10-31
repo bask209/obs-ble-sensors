@@ -501,9 +501,11 @@ TEST(manager_lists_paired_devices_to_scan_listeners)
 
 TEST(manager_logs_connection_events_once)
 {
-	Fixture f;
+	// Declared before the fixture: the callback may run until the manager (and its
+	// worker threads) are gone.
 	std::mutex m;
 	std::vector<std::string> events;
+	Fixture f;
 	f.manager->setEventLog([&](const std::string &, const std::string &msg) {
 		std::lock_guard<std::mutex> lock(m);
 		events.push_back(msg);

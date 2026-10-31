@@ -16,7 +16,7 @@ itself every time OBS starts.
 
 *Animated heart, digits that invert whatever is behind them, contrast halo. Captured in OBS 32.2.2.*
 
-The **[review report](#review-report-v100)** below documents the efficiency, security and compatibility
+The **[review report](#review-report-v101)** below documents the efficiency, security and compatibility
 work and what was measured.
 
 ## Compatibility
@@ -140,7 +140,7 @@ The plugin is designed to be harmless to every Bluetooth device, yours and other
   allow only one connection can't talk to a phone app at the same time, and Windows may refuse a
   second app while OBS holds the device.
 
-## Review report (v1.0.0)
+## Review report (v1.0.1)
 
 This section records the in-depth review of resource use, security and compatibility, every change
 it led to, and **what was measured versus what could not be verified**.
