@@ -1,0 +1,68 @@
+[  0.0s] OBS 32.2.2, websocket 5.7.4, platform Windows 11 Version 25H2
+[  0.0s] ble_heart_rate_source registered: true
+[  0.1s] video 1920x1080 @ 60/1
+[  0.1s] A: source without a sensor
+[  0.1s] HR-none=ERR(Failed to render screenshot.)
+[  1.2s] HR-none=420x96 visiblePx=0
+[  2.2s] HR-none=420x96 visiblePx=0
+[  3.2s] C/D/E/F: source on simulated sensor (40 s cycle: 20 s data, 10 s silent, 5 s off, 5 s back)
+[  3.2s] L: second source on the same sensor
+[  3.2s] HR=ERR(Failed to render screenshot.)  HR2=ERR(Failed to render screenshot.)
+[  4.2s] HR=420x96 visiblePx=10090  HR2=140x96 visiblePx=2326
+[  5.2s] HR=420x96 visiblePx=10148  HR2=140x96 visiblePx=2374
+[  6.2s] HR=420x96 visiblePx=10237  HR2=140x96 visiblePx=2463
+[  7.2s] HR=420x96 visiblePx=10372  HR2=140x96 visiblePx=2599
+[  8.2s] HR=420x96 visiblePx=9785  HR2=140x96 visiblePx=2016
+[  9.3s] HR=420x96 visiblePx=10397  HR2=140x96 visiblePx=2615
+[ 10.3s] HR=420x96 visiblePx=10374  HR2=140x96 visiblePx=2590
+[ 11.3s] HR=420x96 visiblePx=10374  HR2=140x96 visiblePx=2590
+[ 12.3s] HR=420x96 visiblePx=10374  HR2=140x96 visiblePx=2590
+[ 13.3s] HR=420x96 visiblePx=10374  HR2=140x96 visiblePx=2590
+[ 14.3s] HR=420x96 visiblePx=10374  HR2=140x96 visiblePx=2590
+[ 15.3s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 16.3s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 17.3s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 18.3s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 19.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 20.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 21.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 22.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 23.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 24.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 25.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 26.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 27.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 28.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 29.4s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 30.5s] HR=420x96 visiblePx=0  HR2=140x96 visiblePx=0
+[ 31.5s] HR=420x96 visiblePx=10308  HR2=140x96 visiblePx=2552
+[ 32.5s] HR=420x96 visiblePx=9667  HR2=140x96 visiblePx=1903
+[ 33.5s] HR=420x96 visiblePx=10162  HR2=140x96 visiblePx=2409
+[ 34.5s] HR=420x96 visiblePx=10090  HR2=140x96 visiblePx=2326
+[ 35.5s] HR=420x96 visiblePx=10148  HR2=140x96 visiblePx=2374
+[ 36.5s] HR=420x96 visiblePx=10237  HR2=140x96 visiblePx=2463
+[ 37.5s] HR=420x96 visiblePx=10372  HR2=140x96 visiblePx=2599
+[ 38.5s] HR=420x96 visiblePx=9785  HR2=140x96 visiblePx=2016
+[ 39.5s] HR=420x96 visiblePx=10397  HR2=140x96 visiblePx=2615
+[ 40.5s] HR=420x96 visiblePx=10374  HR2=140x96 visiblePx=2590
+[ 41.6s] HR=420x96 visiblePx=10308  HR2=140x96 visiblePx=2552
+[ 42.6s] HR=420x96 visiblePx=9667  HR2=140x96 visiblePx=1903
+[ 43.6s] HR=420x96 visiblePx=10162  HR2=140x96 visiblePx=2409
+[ 44.6s] HR=420x96 visiblePx=10090  HR2=140x96 visiblePx=2326
+[ 45.6s] HR=420x96 visiblePx=10148  HR2=140x96 visiblePx=2374
+[ 46.6s] HR=420x96 visiblePx=10237  HR2=140x96 visiblePx=2463
+[ 47.6s] HR=420x96 visiblePx=10372  HR2=140x96 visiblePx=2599
+[ 48.6s] HR=420x96 visiblePx=9785  HR2=140x96 visiblePx=2016
+[ 49.6s] HR=420x96 visiblePx=10397  HR2=140x96 visiblePx=2615
+[ 50.6s] HR=420x96 visiblePx=10374  HR2=140x96 visiblePx=2590
+[ 51.6s] stats: fps=60.0 avgRender=0.179ms renderSkipped=0/2908 cpu=0.4%
+[ 51.6s] K/G: switch HR2 to the unsupported simulated device
+[ 51.6s] HR2=140x96 visiblePx=2590
+[ 52.7s] HR2=140x96 visiblePx=0
+[ 53.7s] HR2=140x96 visiblePx=0
+[ 54.7s] HR2=140x96 visiblePx=0
+[ 55.7s] G: switch HR2 back to the heart-rate sensor
+[ 55.7s] HR2=140x96 visiblePx=0
+[ 56.7s] HR2=140x96 visiblePx=0
+[ 57.7s] HR2=140x96 visiblePx=0
+[ 58.7s] done (phase first)

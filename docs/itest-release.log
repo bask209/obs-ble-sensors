@@ -1,0 +1,25 @@
+[  2.1s] OBS 32.2.2, websocket 5.7.4, platform Windows 11 Version 25H2
+[  2.1s] ble_heart_rate_source registered: true
+[  2.1s] release DLL + real WinRT backend: source pointed at an absent sensor
+[  2.1s] HR-real=ERR(Failed to render screenshot.)
+[  3.1s] HR-real=2x2 visiblePx=0
+[  4.1s] HR-real=2x2 visiblePx=0
+[  5.1s] HR-real=2x2 visiblePx=0
+[  6.1s] HR-real=2x2 visiblePx=0
+[  7.1s] HR-real=2x2 visiblePx=0
+[  8.1s] HR-real=2x2 visiblePx=0
+[  9.1s] HR-real=2x2 visiblePx=0
+[ 10.1s] HR-real=2x2 visiblePx=0
+[ 11.1s] HR-real=2x2 visiblePx=0
+[ 12.1s] HR-real=2x2 visiblePx=0
+[ 13.1s] HR-real=2x2 visiblePx=0
+[ 14.1s] HR-real=2x2 visiblePx=0
+[ 15.1s] HR-real=2x2 visiblePx=0
+[ 16.2s] HR-real=2x2 visiblePx=0
+[ 17.2s] HR-real=2x2 visiblePx=0
+[ 18.2s] HR-real=2x2 visiblePx=0
+[ 19.2s] HR-real=2x2 visiblePx=0
+[ 20.2s] HR-real=2x2 visiblePx=0
+[ 21.2s] HR-real=2x2 visiblePx=0
+[ 22.2s] stats: fps=60.0 renderSkipped=0/1314
+[ 22.2s] done (phase release)

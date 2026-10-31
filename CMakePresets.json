@@ -1,0 +1,77 @@
+{
+  "version": 8,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "template",
+      "hidden": true,
+      "cacheVariables": {
+        "OBS_BLE_SENSORS_DEV_MOCK": false
+      }
+    },
+    {
+      "name": "windows-x64",
+      "displayName": "Windows x64",
+      "description": "Build for Windows x64 (release-safe, no simulated backend)",
+      "inherits": ["template"],
+      "binaryDir": "${sourceDir}/build_x64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "warnings": {"dev": true, "deprecated": true}
+    },
+    {
+      "name": "windows-ci-x64",
+      "inherits": ["windows-x64"],
+      "displayName": "Windows x64 CI build",
+      "description": "Build for Windows x64 on CI (warnings as errors)",
+      "cacheVariables": {
+        "CMAKE_COMPILE_WARNING_AS_ERROR": true
+      }
+    },
+    {
+      "name": "windows-dev-x64",
+      "inherits": ["windows-x64"],
+      "displayName": "Windows x64 DEVELOPMENT (simulated BLE)",
+      "description": "Development build containing the simulated BLE backend (OBS_BLE_SENSORS_MOCK=1). Never ship.",
+      "binaryDir": "${sourceDir}/build_dev_x64",
+      "cacheVariables": {
+        "OBS_BLE_SENSORS_DEV_MOCK": true
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x64",
+      "configurePreset": "windows-x64",
+      "displayName": "Windows x64",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "windows-x64-release",
+      "configurePreset": "windows-x64",
+      "displayName": "Windows x64 Release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-ci-x64",
+      "configurePreset": "windows-ci-x64",
+      "displayName": "Windows x64 CI",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-dev-x64",
+      "configurePreset": "windows-dev-x64",
+      "displayName": "Windows x64 DEVELOPMENT",
+      "configuration": "RelWithDebInfo"
+    }
+  ]
+}

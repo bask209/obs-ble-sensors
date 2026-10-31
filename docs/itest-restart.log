@@ -1,0 +1,31 @@
+[  2.0s] OBS 32.2.2, websocket 5.7.4, platform Windows 11 Version 25H2
+[  2.0s] ble_heart_rate_source registered: true
+[  2.0s] B/J: after restart
+[  2.0s] HR settings: {"device_key":"ble:public:DE:00:00:00:00:01"}
+[  2.0s] HR transform position 321,123
+[  2.1s] HR=420x96 visiblePx=0  HR-none=420x96 visiblePx=0
+[  3.1s] HR=420x96 visiblePx=10162  HR-none=420x96 visiblePx=0
+[  4.1s] HR=420x96 visiblePx=10090  HR-none=420x96 visiblePx=0
+[  5.1s] HR=420x96 visiblePx=10148  HR-none=420x96 visiblePx=0
+[  6.1s] HR=420x96 visiblePx=10237  HR-none=420x96 visiblePx=0
+[  7.1s] HR=420x96 visiblePx=10372  HR-none=420x96 visiblePx=0
+[  8.1s] HR=420x96 visiblePx=9785  HR-none=420x96 visiblePx=0
+[  9.2s] HR=420x96 visiblePx=10397  HR-none=420x96 visiblePx=0
+[ 10.2s] HR=420x96 visiblePx=10374  HR-none=420x96 visiblePx=0
+[ 11.2s] HR=420x96 visiblePx=10308  HR-none=420x96 visiblePx=0
+[ 12.2s] HR=420x96 visiblePx=9667  HR-none=420x96 visiblePx=0
+[ 13.2s] HR=420x96 visiblePx=10162  HR-none=420x96 visiblePx=0
+[ 14.2s] HR=420x96 visiblePx=10090  HR-none=420x96 visiblePx=0
+[ 15.2s] HR=420x96 visiblePx=10148  HR-none=420x96 visiblePx=0
+[ 16.2s] HR=420x96 visiblePx=10237  HR-none=420x96 visiblePx=0
+[ 17.3s] HR=420x96 visiblePx=10372  HR-none=420x96 visiblePx=0
+[ 18.3s] HR=420x96 visiblePx=9785  HR-none=420x96 visiblePx=0
+[ 19.3s] HR=420x96 visiblePx=10397  HR-none=420x96 visiblePx=0
+[ 20.3s] HR=420x96 visiblePx=10374  HR-none=420x96 visiblePx=0
+[ 21.3s] HR=420x96 visiblePx=10374  HR-none=420x96 visiblePx=0
+[ 22.3s] HR=420x96 visiblePx=10374  HR-none=420x96 visiblePx=0
+[ 23.3s] HR=420x96 visiblePx=10374  HR-none=420x96 visiblePx=0
+[ 24.3s] HR=420x96 visiblePx=10374  HR-none=420x96 visiblePx=0
+[ 25.3s] HR=420x96 visiblePx=0  HR-none=420x96 visiblePx=0
+[ 26.3s] HR=420x96 visiblePx=0  HR-none=420x96 visiblePx=0
+[ 27.3s] done (phase restart)
