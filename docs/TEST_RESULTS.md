@@ -127,3 +127,22 @@ connection manager, so a worker thread could log into it after it went out of sc
 callback logs to OBS and is unaffected. The test was fixed, the callback lifetime rule was documented,
 and the ASan suite then passed **20 consecutive runs** locally (plus 10 normal runs). Nothing was
 released from `1.0.0`; the same code plus this fix ships as `1.0.1`.
+
+## 9. Second audit round (v1.0.2)
+
+- **Unit tests: 73/73.** New tests:
+  - lock-free render query under load (20,000 readings, 10 disconnects, a concurrent reader; 0 inconsistent values);
+  - packed render word vs the visibility rule (300,000 random states);
+  - registry: concurrent slow writes never block lookups, and the newest state always wins;
+  - retries after a long absence.
+- **Sanitizers:**
+  - AddressSanitizer clean locally (25+ runs).
+  - CI runs ASan on Windows, ASan + UBSan on Linux and ThreadSanitizer on Linux. All passed twice.
+  - TSan found one real data race (stop flag read without its lock on the disconnect path); fixed.
+- **Real Bluetooth (`ble-probe`):** CPU while searching for an absent sensor ≈ 0.125 % of one core, 10 MB. Worker thread priority -4 (background).
+- **Real OBS 32.2.2, 1080p60:**
+  - OBS process CPU 9.79 % with 2 live 300-pt sources vs 9.32 % without (≈0.2 % per source).
+  - Average frame render 0.284 vs 0.185 ms.
+  - Profiler: source tick 99th percentile 0.024 vs 0.020 ms.
+  - 0 skipped frames.
+  - Release DLL inside OBS: Bluetooth thread base priority 4, version 1.0.2, 0 memory leaks on exit.

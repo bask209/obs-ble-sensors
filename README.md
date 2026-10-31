@@ -246,9 +246,11 @@ disk I/O, radio time and scheduler priority.
 | Cancellation polling at 20 wake-ups/s during connection attempts | 5 wake-ups/s (cancellation still within 200 ms) | 4× fewer wake-ups while connecting |
 | A sensor put away for hours was still retried every 15 s | After 10 min of absence, every 30 s | Half the radio paging for absent sensors |
 | A registry save could make other threads, including OBS's graphics thread when resuming a source, wait on disk I/O | Snapshot then write outside the data lock, with version ordering so the newest state always wins | Concurrency test: lookups stay instant during slow writes; the final file is always the newest state |
+| **ThreadSanitizer** (new CI job) found a real data race: after a disconnect, the worker read its stop flag without the lock that shutdown writes it under. Harmless in practice, but undefined behaviour | Read under the lock the code already held | TSan, ASan and UBSan all clean in CI (two full runs) |
 
 **Measured after this round** (Windows 11, OBS 32.2.2, 1080p60):
 - **Searching for an absent sensor:** ≈**0.125 %** of one core and 10 MB in total, with the real Bluetooth stack.
+- **Thread priority inside OBS:** the plugin's Bluetooth thread runs at base priority **4** (Windows background mode). With no heart-rate source in use there is no plugin thread at all.
 - **Two live sources with very large text (300 pt):**
   - About **0.2 % of one core and 0.05 ms render time per source per frame**. This was A/B-measured as total OBS CPU 9.79 % with the sources vs 9.32 % without.
   - The OBS profiler shows the graphics thread's source tick at **0.024 ms (99th percentile) with the sources vs 0.020 ms without**. The once-per-second text updates cause no frame spikes.
