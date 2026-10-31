@@ -26,11 +26,15 @@ itself every time OBS starts.
 
 ## Install
 
-1. Download `obs-ble-sensors-<version>-windows-x64.zip` from
-   [Releases](https://github.com/bask209/obs-ble-sensors/releases) and extract it.
-2. Close OBS and double-click **Install.cmd**.
-   Manual alternative: copy the `obs-ble-sensors` folder into `C:\ProgramData\obs-studio\plugins\`.
+1. Download **`obs-ble-sensors-<version>-windows-x64-setup.exe`** from
+   [Releases](https://github.com/bask209/obs-ble-sensors/releases).
+2. Close OBS and run it. Windows asks for administrator permission because plugins go into
+   `C:\ProgramData`. The installer is not code-signed, so SmartScreen may show
+   "Windows protected your PC": click **More info → Run anyway**.
 3. Start OBS. You can enable or disable the plugin in OBS 32's **Tools → Plugin Manager**.
+
+Prefer no installer? Download the `.zip` instead, extract it and run **Install.cmd**, or copy the
+`obs-ble-sensors` folder into `C:\ProgramData\obs-studio\plugins\`.
 
 Resulting layout (standard OBS plugin layout):
 
@@ -42,7 +46,7 @@ C:\ProgramData\obs-studio\plugins\obs-ble-sensors\
 
 ### Uninstall
 
-Close OBS and run **Uninstall.cmd**, or delete
+Windows Settings → Apps → **OBS BLE Sensors** → Uninstall (if you used the Setup.exe), or run **Uninstall.cmd** / delete
 `C:\ProgramData\obs-studio\plugins\obs-ble-sensors`. Saved sensors are stored in
 `%APPDATA%\obs-studio\plugin_config\obs-ble-sensors\devices.json` (Uninstall.cmd offers to delete it).
 

@@ -23,7 +23,7 @@ Nothing below is claimed beyond what was actually run.
 - `obs-ble-sensors.dll` (Release, x64) imports only `obs.dll`, `obs-frontend-api.dll`, Qt6
   Core/Gui/Widgets (shipped with OBS), the MSVC runtime, and Windows system libraries.
 - The release DLL contains no simulated-backend code (checked by string search, also enforced in CI).
-- Package: `release/obs-ble-sensors-1.0.0-windows-x64.zip` (standard OBS plugin layout plus Install/Uninstall scripts).
+- Packages: `obs-ble-sensors-1.0.0-windows-x64-setup.exe` (Inno Setup; silent install + uninstall verified in a scratch folder: correct files, Apps entry registered and removed) and the `.zip`.
 
 ## 3. OBS integration (real OBS 32.2.2, isolated portable copy, driven by obs-websocket)
 

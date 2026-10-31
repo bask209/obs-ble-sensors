@@ -38,6 +38,16 @@ try {
     & (Join-Path $env:SystemRoot 'System32\tar.exe') -a -c -f $Zip -C $Stage obs-ble-sensors Install.cmd Uninstall.cmd README.txt LICENSE.txt NOTICE.md
     if ($LASTEXITCODE) { throw 'zip failed' }
     Write-Host "Created $Zip"
+
+    # Setup.exe (Inno Setup 6; preinstalled on GitHub Windows runners).
+    $Iscc = @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $Iscc) { throw 'Inno Setup 6 (ISCC.exe) not found: winget install JRSoftware.InnoSetup' }
+    & $Iscc /Q "/DAppVersion=$Version" "/DStageDir=$Stage" (Join-Path $Root 'packaging\installer.iss')
+    if ($LASTEXITCODE) { throw 'installer build failed' }
+    Write-Host "Created $(Join-Path $Root "release\$Name-$Version-windows-x64-setup.exe")"
 } finally {
     Pop-Location
 }

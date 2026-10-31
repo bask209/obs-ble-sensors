@@ -54,7 +54,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: obs-ble-sensors-windows-x64
-          path: release/*.zip
+          path: |
+            release/*.zip
+            release/*-setup.exe
 
   release:
     name: GitHub release
@@ -73,4 +75,4 @@ jobs:
         run: |
           prerelease=""
           case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "${GITHUB_REF_NAME}" *.zip --repo "${GITHUB_REPOSITORY}" --title "OBS BLE Sensors ${GITHUB_REF_NAME}" --generate-notes ${prerelease}
+          gh release create "${GITHUB_REF_NAME}" *-setup.exe *.zip --repo "${GITHUB_REPOSITORY}" --title "OBS BLE Sensors ${GITHUB_REF_NAME}" --generate-notes ${prerelease}
